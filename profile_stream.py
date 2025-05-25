@@ -1,24 +1,30 @@
 import cProfile
 import pstats
+import numpy as np
 from AOCard import AOCard
 from Stream import Stream
 
-def main():
-    # Create test card with 8 channels
-    card = AOCard()
-    for i in range(8):
-        card.add_channel(i, 0.0)
-        # Add some test instructions
-        card.channels[i].const(0, 1.0, 1.0)
-        card.channels[i].sine(1.0, 1.0, 1000.0, 1.0)
-        card.channels[i].linramp(2.0, 1.0, 0.0, 1.0)
-        card.channels[i].compile()
-
-    # Create stream with 2M chunk size
-    stream = Stream(card, chunk_size=2_000_000, channels_per_process=8)
+def create_test_card():
+    """Create a test card with 16 channels."""
+    frequencies = np.logspace(np.log10(1e3), np.log10(200e3), 16).tolist()
+    card = AOCard(samp_rate=10e6)
     
-    # Profile 5 chunks
-    for _ in range(5):
+    for i, freq in enumerate(frequencies):
+        ch = card.add_channel(i, default_val=0.0)
+        ch.sine(0, 2.0, freq, 1.5, offset=0, phase=0)
+        ch.compile()
+    
+    return card
+
+def main():
+    # Create test card
+    card = create_test_card()
+    
+    # Create stream with optimal configuration
+    stream = Stream(card, chunk_size=2_000_000, channels_per_process=4)
+    
+    # Process 10 chunks
+    for _ in range(10):
         stream.calc_next_chunk()
 
 if __name__ == '__main__':
@@ -28,9 +34,10 @@ if __name__ == '__main__':
     main()
     profiler.disable()
     
-    # Save stats to file for snakeviz
-    stats = pstats.Stats(profiler)
-    stats.dump_stats('stream_profile.prof')
-    
     # Print sorted stats
-    stats.sort_stats('cumulative').print_stats(30) 
+    stats = pstats.Stats(profiler)
+    print("\nTop 20 functions by cumulative time:")
+    stats.sort_stats('cumulative').print_stats(20)
+    
+    print("\nTop 20 functions by total time:")
+    stats.sort_stats('time').print_stats(20) 
