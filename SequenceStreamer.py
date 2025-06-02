@@ -10,9 +10,11 @@ import selectors
 from Channels import AnalogChannel, DigitalChannel
 
 from Worker import Worker
-from Writer import Writer
+from Writer import Writer, TEST_MODE
 
 import multiprocessing
+multiprocessing.set_start_method("fork")
+
 
 class SequenceStreamer:
     """
@@ -20,10 +22,10 @@ class SequenceStreamer:
     and runs the even loop in the main thread to assign chunks and collect reports.
     """
 
-    WORKER_ASSIGN_STRUCT = struct.Struct('>I I I I')  # (seq, buf_idx, ch_start, ch_end)
-    WORKER_DONE_STRUCT = struct.Struct('>I I I d')  # (seq, buf_idx, worker_id, compute_time)
-    CHUNK_READY_STRUCT = struct.Struct('>I I')  # (seq, buf_idx)
-    SLOT_FREE_STRUCT = struct.Struct('>I')  # (buf_idx)
+    WORKER_ASSIGN_STRUCT = struct.Struct('>q i I I')  # (seq, buf_idx, ch_start, ch_end)
+    WORKER_DONE_STRUCT = struct.Struct('>q i I d')  # (seq, buf_idx, worker_id, compute_time)
+    CHUNK_READY_STRUCT = struct.Struct('>q i')  # (seq, buf_idx)
+    SLOT_FREE_STRUCT = struct.Struct('>i')  # (buf_idx)
 
     def __init__(
             self,
@@ -67,23 +69,13 @@ class SequenceStreamer:
         self.worker_assign_child_fds = []
         self.worker_done_child_fds = []
 
-        for _ in range(num_workers):
-            assign_r_fd, assign_w_fd = os.pipe()
-            done_r_fd, done_w_fd = os.pipe()
-            self.worker_assign_fds.append(assign_w_fd)
-            self.worker_done_fds.append(done_r_fd)
-            self.worker_assign_child_fds.append(assign_r_fd)
-            self.worker_done_child_fds.append(done_w_fd)
-
         # Compute channel ranges
         channels_per_worker = num_channels // num_workers
-        remaining_channels = num_channels % num_workers
         self.channel_ranges = []
-        idx = 0
-        for i in range(num_workers):
-            count = channels_per_worker + (1 if i < remaining_channels else 0)
-            self.channel_ranges.append((idx, idx + count))
-            idx += count
+        for i in range(num_workers-1):
+            self.channel_ranges.append((i*channels_per_worker, (i+1)*channels_per_worker))
+        # The last worker gets the remaining channels
+        self.channel_ranges.append(((num_workers-1)*channels_per_worker, num_channels))
 
         # Placeholder for processes
         self.workers = []
@@ -102,14 +94,88 @@ class SequenceStreamer:
 
         # Selector for worker and free pipes
         self.sel = selectors.DefaultSelector()
-        self.sel.register(self.slot_free_fd, selectors.EVENT_READ, self._process_slot_free)
-        for fd in self.worker_done_fds:
-            self.sel.register(fd, selectors.EVENT_READ, self._process_worker_done)        
 
         # Set non-blocking mode for manager-readable pipes
         os.set_blocking(self.slot_free_fd, False)
-        for fd in self.worker_done_fds:
-            os.set_blocking(fd, False)
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup."""
+        self.cleanup()
+
+    def __del__(self):
+        """Destructor - safety net for cleanup."""
+        self.cleanup()
+
+    def cleanup(self):
+        """Clean up all resources."""
+        # Stop all processes
+        if hasattr(self, 'workers'):
+            for worker in self.workers:
+                if worker.is_alive():
+                    worker.terminate()
+                    worker.join(timeout=1.0)
+                    if worker.is_alive():
+                        print(f"Warning: Worker {worker.worker_id} did not terminate gracefully")
+                        worker.kill()
+
+        if hasattr(self, 'writer') and self.writer is not None:
+            if self.writer.is_alive():
+                self.writer.terminate()
+                self.writer.join(timeout=1.0)
+                if self.writer.is_alive():
+                    print("Warning: Writer did not terminate gracefully")
+                    self.writer.kill()
+
+        # Close all pipes
+        for fd in getattr(self, 'worker_assign_fds', []):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        for fd in getattr(self, 'worker_done_fds', []):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        for fd in getattr(self, 'worker_assign_child_fds', []):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        for fd in getattr(self, 'worker_done_child_fds', []):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        # Close writer pipes
+        for attr in ['chunk_ready_fd', 'slot_free_fd', 'chunk_ready_child_fd', 'slot_free_child_fd']:
+            if hasattr(self, attr):
+                try:
+                    os.close(getattr(self, attr))
+                except OSError:
+                    pass
+
+        # Close shared memory
+        if hasattr(self, 'shm'):
+            try:
+                self.shm.close()
+                self.shm.unlink()  # This will delete the shared memory segment
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                print(f"Error cleaning up shared memory: {e}")
+
+        # Close selector
+        if hasattr(self, 'sel'):
+            self.sel.close()
 
     def _process_worker_done(self, fd):
         """
@@ -121,6 +187,7 @@ class SequenceStreamer:
         if len(data) < self.WORKER_DONE_STRUCT.size:
             raise ValueError("Received incomplete worker done notification.")
         seq, buf_idx, worker_id, compute_time = self.WORKER_DONE_STRUCT.unpack(data)
+        print(f"Received done notification: seq={seq}, buf_idx={buf_idx}, worker_id={worker_id}, compute_time={compute_time}")
 
         if seq not in self.processed_seqs:
             raise ValueError(f"Received done notification for unknown sequence {seq}.")
@@ -146,7 +213,6 @@ class SequenceStreamer:
             # Write the chunk ready notification to the writer
             self._assign_slot_write(seq, buf_idx)
 
-
     def _process_slot_free(self, fd):
         """
         Process a slot free notification from the writer.
@@ -157,14 +223,19 @@ class SequenceStreamer:
             raise ValueError("Received incomplete slot free notification.")
         
         buf_idx = self.SLOT_FREE_STRUCT.unpack(data)[0]
+
+        if buf_idx == -1:
+            raise ValueError("Received error from writer: -1.")
+
         self.available_slots.append(buf_idx)
 
+        print(f"Slot {buf_idx} freed by writer.")
+
     def _assign_chunk(self, worker_id: int, seq: int, buf_idx: int, ch_start: int, ch_end: int):
-        """
-        Assign a chunk to a worker process.
-        """
+        """Assign a chunk to a worker."""
+        print(f"Assigning chunk to worker {worker_id} at assign_w={self.worker_assign_fds[worker_id]}: seq={seq}, buf_idx={buf_idx}, ch_start={ch_start}, ch_end={ch_end}")
         assign_data = self.WORKER_ASSIGN_STRUCT.pack(seq, buf_idx, ch_start, ch_end)
-        os.write(self.worker_assign_fds[worker_id], assign_data)
+        bytes_written = os.write(self.worker_assign_fds[worker_id], assign_data)
 
     def _assign_slot_write(self, seq: int, buf_idx: int):
         """
@@ -172,17 +243,28 @@ class SequenceStreamer:
         This method writes the sequence number and buffer index to the pipe.
         """
         ready_data = self.CHUNK_READY_STRUCT.pack(seq, buf_idx)
-        os.write(self.chunk_ready_child_fd, ready_data)
+        os.write(self.chunk_ready_fd, ready_data)
 
     def _manager_loop(self):
+        if TEST_MODE:
+            time.sleep(0.01)
+
         while True:
+            #print(f"Manager loop: {len(self.available_workers)} free workers, {len(self.available_slots)} free slots.")
             # While there are free workers and available slots, assign chunks to be computed
-            while len(self.available_workers) and len(self.available_slots):
+            while len(self.available_workers):
+                if self.next_calc_seq in self.processed_seqs:
+                    buf_idx = self.processed_seqs_slot[self.next_calc_seq]
+                else:
+                    if len(self.available_slots):
+                        buf_idx = self.available_slots.pop()
+                        self.processed_seqs_slot[self.next_calc_seq] = buf_idx
+                        self.processed_seqs[self.next_calc_seq] = self.num_workers
+                    else:
+                        break
+
                 # Get the next available worker
                 worker_id = self.available_workers.pop()
-
-                # Get the next available slot
-                buf_idx = self.available_slots[-1]
 
                 # Determine the channel range for this worker
                 ch_start, ch_end = self.channel_ranges[self.next_calc_ch_group]
@@ -190,54 +272,53 @@ class SequenceStreamer:
                 # Assign the chunk to the worker
                 self._assign_chunk(worker_id, self.next_calc_seq, buf_idx, ch_start, ch_end)
 
-                # Update the processed sequences
-                if self.next_calc_seq not in self.processed_seqs:
-                    self.processed_seqs[self.next_calc_seq] = self.num_workers
-
                 # Increment the sequence number if necessary
                 self.next_calc_ch_group += 1
                 if self.next_calc_ch_group >= self.num_workers:
                     self.next_calc_ch_group = 0
                     self.next_calc_seq += 1
-                    self.available_slots.pop()  # Remove the slot from available slots (it is now fully assigned)
 
-            # Check for completed chunks from workers
-            events = self.sel.select(timeout=0.001)
+            # Check for completed chunks from workers and free slots from writer
+            events = self.sel.select(timeout=1e-6)
             for key, _ in events:
                 callback = key.data
                 callback(key.fileobj)
 
     def start(self):
-        # Spawn worker processes
-        for wid in range(self.num_workers):
-            p = multiprocessing.Process(
-                target = Worker(
+        try:
+            # Spawn worker processes
+            for wid in range(self.num_workers):
+                worker = Worker(
                     worker_id=wid,
-                    assign_r_fd=self.worker_assign_child_fds[wid],
-                    report_w_fd=self.worker_done_fds[wid],
                     shm_name=self.shm.name,
                     sample_rate=self.sample_rate,
                     chunk_size=self.chunk_size,
                     num_channels=self.num_channels,
                     pool_size=self.pool_size
-                ).run
-            )
-            p.daemon = True
-            p.start()
-            self.workers.append(p)
-            self.available_workers.append(wid)
+                )
+                worker.daemon = True
+                worker.start()
 
-        # Wait for the workers to start up
-        time.sleep(0.1)
+                # Store the pipe ends we need
+                self.worker_assign_fds.append(worker.assign_w)
+                self.worker_done_fds.append(worker.done_r)
+                
+                # Register the done pipe with the selector
+                self.sel.register(worker.done_r, selectors.EVENT_READ, self._process_worker_done)
+                os.set_blocking(worker.done_r, False)
+                
+                self.workers.append(worker)
+                self.available_workers.append(wid)
 
-        # Create analog channels
-        ao_channels = [AnalogChannel(name=f"{self.device_name}/ao{i}", min_val=-2.0, max_val=2.0) for i in range(self.num_channels)]
+            # Wait for the workers to start up
+            time.sleep(0.1)
 
-        # Spawn the writer process
-        self.writer = multiprocessing.Process(
-            target=Writer(
-                ready_r_fd=self.chunk_ready_child_fd,
-                report_w_fd=self.slot_free_child_fd,
+            # Create analog channels
+            ao_channels = [AnalogChannel(name=f"{self.device_name}/ao{i}", min_val=-2.0, max_val=2.0) for i in range(self.num_channels)]
+
+            # Spawn the writer process
+            writer = Writer(
+                shm_name=self.shm.name,
                 sample_rate=self.sample_rate,
                 chunk_size=self.chunk_size,
                 outbuf_num_chunks=self.pool_size,
@@ -246,28 +327,40 @@ class SequenceStreamer:
                 device_name=self.device_name,
                 ao_channels=ao_channels,
                 do_channels=[]  # Placeholder for digital output channels
-            ).run
-        )
-        self.writer.daemon = True
-        self.writer.start()
+            )
+            writer.daemon = True
+            writer.start()
+            
+            # Store the pipe ends we need
+            self.chunk_ready_fd = writer.ready_w
+            self.slot_free_fd = writer.report_r
+            
+            # Register the writer's pipe with the selector
+            self.sel.register(self.slot_free_fd, selectors.EVENT_READ, self._process_slot_free)
+            os.set_blocking(self.slot_free_fd, False)
+            
+            self.writer = writer
 
-        # Run manager loop in main thread
-        try:
+            # Start the manager loop
             self._manager_loop()
         except KeyboardInterrupt:
-            pass
+            print("\nReceived keyboard interrupt, cleaning up...")
+        except Exception as e:
+            print(f"Error in sequence streamer: {e}")
+        finally:
+            self.cleanup()
 
 
         
 if __name__ == "__main__":
-    # Example usage
-    streamer = SequenceStreamer(
+    # Example usage with context manager
+    with SequenceStreamer(
         num_channels=8,  # Total number of channels
         chunk_size=65536,  # Size of each chunk in samples
         pool_size=4,  # Size of the memory pool
         sample_rate=1e6,  # Sample rate in Hz
         num_workers=4,  # Number of worker processes
         device_name="PXI1Slot3"  # Name of the DAQ device
-    )
-    streamer.start()
+    ) as streamer:
+        streamer.start()
 
