@@ -246,11 +246,7 @@ class SequenceStreamer:
         os.write(self.chunk_ready_fd, ready_data)
 
     def _manager_loop(self):
-        if TEST_MODE:
-            time.sleep(0.01)
-
         while True:
-            #print(f"Manager loop: {len(self.available_workers)} free workers, {len(self.available_slots)} free slots.")
             # While there are free workers and available slots, assign chunks to be computed
             while len(self.available_workers):
                 if self.next_calc_seq in self.processed_seqs:

@@ -98,15 +98,14 @@ class Writer(Process):
                 if TEST_MODE:
                     self._every_chunk_samples_callback(None, None, None, None)
 
-        except UnderrunError:
-            print("Writer: underrun error occurred. Stopping the task.")
         except KeyboardInterrupt:
-            print("Writer: Keyboard interrupt received. Stopping the task.")
+            print("Writer: Keyboard interrupt received.")
         except Exception as e:
-            print(f"Writer failed: {e}")
+            print(f"Writer failed: {e}.")
         finally:
             # Cleanup
             if self.task:
+                print("Writer: Stopping the NI-DAQ task.")
                 self.task.stop()
                 self.task.close()
             if self.shm:
@@ -123,7 +122,7 @@ class Writer(Process):
         # Wait for the ready signal from the pipe up to timeout
         rlist, _, _ = select.select([self.ready_r], [], [], self.timeout)
         if not rlist:
-            raise UnderrunError(f"Timed out after {self.timeout*1e3}ms waiting for ready signal from the pipe.")
+            raise UnderrunError(f"Timed out after {self.timeout*1e3:.3f}ms waiting for ready signal from the pipe")
         
         # If we got a signal, read it
         read_msg = os.read(self.ready_r, self.READY_STRUCT.size)
@@ -135,7 +134,7 @@ class Writer(Process):
 
         # Make sure the sequence number is as expected
         if seq != self.last_seq_written + 1:
-            raise ValueError(f"Out-of-order error: streaming chunk {seq}, expected {self.last_seq_written + 1}.")
+            raise ValueError(f"Out-of-order error: streaming chunk {seq}, expected {self.last_seq_written + 1}")
         
         # Get the flattened view of the current chunk memory
         flat_buffer = self.buffer[buf_idx].reshape(-1)
@@ -144,7 +143,7 @@ class Writer(Process):
         try:
             if not TEST_MODE:
                 self.writer.write_many_sample(flat_buffer)                                                                                                                                    
-        except ni.errors.DaqError as e:
+        except self.ni.errors.DaqError as e:
             print(f"DAQ error: {e}")
             raise
 
