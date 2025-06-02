@@ -75,13 +75,35 @@ class Worker(Process):
                 # Compute time vector in seconds
                 t = np.arange(base_idx, base_idx + self.chunk_size) / self.sample_rate
 
+                T0, T1 = seq * self.chunk_size, (seq + 1) * self.chunk_size
+
                 # Time generation of the assigned channels
                 for ch in range(ch_start, ch_end):
-                    # TODO: Replace with actual data generation logic 
-                    # TODO: Think about serializing commands.
+                    inst_set = self.inst_set[ch]
+                    in_chunk_idx = 0
+                    while self.current_inst_idx[ch] < len(inst_set):
+                        # Get the current instruction
+                        (ins_t0,ins_t1) = inst_set[self.current_inst_idx[ch]].times
+                        func = inst_set[self.current_inst_idx[ch]].func
 
-                    # For now, we will generate a simple sine wave for each channel
-                    self.buffer[buf_idx, ch, :] = np.sin(2 * np.pi * ch * t)
+                        # Calculate the time within the instruction
+                        t = np.arange(max(ins_t0, T0)-T0, min(ins_t1, T1)-T0) / self.sample_rate
+
+                        # Calculate the indices of the time within the buffer
+                        buf_st, buf_end = in_chunk_idx, in_chunk_idx + len(t)
+
+                        # Write the data to the buffer
+                        self.buffer[buf_idx, ch, buf_st:buf_end] = func(t)
+
+                        # Move to the next instruction
+                        self.current_inst_idx[ch] += 1
+
+                        # Increment the in-chunk index
+                        in_chunk_idx += len(t)
+
+                        # If the current instruction ends after the chunk boundary, break
+                        if ins_t1 > T1:
+                            break
 
                 # End the timer for computation
                 compute_time = time.time() - compute_time
