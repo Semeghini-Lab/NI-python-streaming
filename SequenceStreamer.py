@@ -235,7 +235,7 @@ class SequenceStreamer:
         """Assign a chunk to a worker."""
         print(f"Assigning chunk to worker {worker_id} at assign_w={self.worker_assign_fds[worker_id]}: seq={seq}, buf_idx={buf_idx}, ch_start={ch_start}, ch_end={ch_end}")
         assign_data = self.WORKER_ASSIGN_STRUCT.pack(seq, buf_idx, ch_start, ch_end)
-        bytes_written = os.write(self.worker_assign_fds[worker_id], assign_data)
+        os.write(self.worker_assign_fds[worker_id], assign_data)
 
     def _assign_slot_write(self, seq: int, buf_idx: int):
         """
@@ -351,9 +351,9 @@ class SequenceStreamer:
 if __name__ == "__main__":
     # Example usage with context manager
     with SequenceStreamer(
-        num_channels=8,  # Total number of channels
+        num_channels=2000,  # Total number of channels
         chunk_size=65536,  # Size of each chunk in samples
-        pool_size=4,  # Size of the memory pool
+        pool_size=8,  # Size of the memory pool
         sample_rate=1e6,  # Sample rate in Hz
         num_workers=4,  # Number of worker processes
         device_name="PXI1Slot3"  # Name of the DAQ device
