@@ -1,3 +1,3 @@
 from collections import namedtuple
 
-Instruction = namedtuple('Instruction', ['func', 'start_samp', 'end_samp'])
+Instruction = namedtuple('Instruction', ['func', 'start_sample', 'end_sample'])

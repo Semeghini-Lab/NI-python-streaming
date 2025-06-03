@@ -6,6 +6,7 @@ import time
 import struct
 import select
 import numpy as np
+from AOSequence import AOSequence
 from multiprocessing import Process, shared_memory
 
 TEST_MODE = True
@@ -20,19 +21,18 @@ class Writer(Process):
     and reports results back via another pipe.
     """
 
-    READY_STRUCT = struct.Struct('>q i')  # (seq, buf_idx)
-    REPORT_STRUCT = struct.Struct('>i')  # (buf_idx)
+    READY_STRUCT = struct.Struct('>q i')  # (chunk_idx, buf_idx)
+    REPORT_STRUCT = struct.Struct('>q i')  # (chunk_idx, buf_idx)
 
     def __init__(
             self,
             shm_name: str,  # Name of the shared memory segment
             sample_rate: float,  # Sample rate in Hz
-            num_channels: int,  # Total number of channels
             chunk_size: int,  # Size of each chunk in samples
             outbuf_num_chunks: int,  # Total number of chunks in the card buffer
             pool_size: int,  # Size of the memory pool for calculations
             device_name: str,  # Name of the DAQ device
-            ao_channels: list,  # List of analog output channel named tuples
+            ao_channels: list[AOSequence],  # List of analog output channel named tuples
             do_channels: list,  # List of digital output channels named tuples
             timeout: float = 100*1e-6,  # Grace period after next chunk is expected
     ) -> None:
@@ -42,11 +42,13 @@ class Writer(Process):
         self.chunk_size = chunk_size
         self.outbuf_num_chunks = outbuf_num_chunks
         self.pool_size = pool_size
-        self.num_channels = num_channels
         self.device_name = device_name
         self.ao_channels = ao_channels
         self.do_channels = do_channels
+        self.num_ao_channels = len(ao_channels)
+        self.num_do_channels = len(do_channels)
         self.timeout = timeout
+        self.running = True
 
         # Create all communication pipes in parent
         self.ready_r, self.ready_w = os.pipe()
@@ -67,13 +69,13 @@ class Writer(Process):
             # Attach to shared memory segment
             self.shm = shared_memory.SharedMemory(name=self.shm_name)
             self.buffer = np.ndarray(
-                (self.pool_size, self.num_channels, self.chunk_size),
+                (self.pool_size, self.num_ao_channels, self.chunk_size),
                 dtype=np.float64,
                 buffer=self.shm.buf
             )
 
-            # Initialize the sequence counter for continuity tracking (sanity check)
-            self.last_seq_written = -1  # Last sequence number written to the device
+            # Initialize the chunk index counter for continuity tracking (sanity check)
+            self.last_written_chunk_idx = -1  # Index of the last chunk written to the device
 
             # Initialize the DAQ device
             if not TEST_MODE:
@@ -92,27 +94,19 @@ class Writer(Process):
                 # Start the task
                 self.task.start()
 
-            # Wait for the interrupt
-            while True:
-                time.sleep(0.1)
+            # Wait for the interrupt or end of stream
+            self.running = True
+            while self.running:
+                time.sleep(0.01)
                 if TEST_MODE:
                     self._every_chunk_samples_callback(None, None, None, None)
 
-        except KeyboardInterrupt:
-            print("Writer: Keyboard interrupt received.")
         except Exception as e:
-            print(f"Writer failed: {e}.")
+            print(f"Writer: {e}.")
+            # Report that the task is stopped (will be terminated by the manager)
+            os.write(self.report_w, self.REPORT_STRUCT.pack(-1, -1))
         finally:
-            # Cleanup
-            if self.task:
-                print("Writer: Stopping the NI-DAQ task.")
-                self.task.stop()
-                self.task.close()
-            if self.shm:
-                self.shm.close()
-
-            # Report that the task is stopped
-            os.write(self.report_w, self.REPORT_STRUCT.pack(-1))
+            self.cleanup()
 
     def _every_chunk_samples_callback(self, task_handle, event_type, n_samples, callback_data):
         """
@@ -124,17 +118,22 @@ class Writer(Process):
         if not rlist:
             raise UnderrunError(f"Timed out after {self.timeout*1e3:.3f}ms waiting for ready signal from the pipe")
         
-        # If we got a signal, read it
+        # If we got a message from the manager, read it
         read_msg = os.read(self.ready_r, self.READY_STRUCT.size)
         if len(read_msg) < self.READY_STRUCT.size:
             raise ValueError("Received incomplete ready signal data.")
         
-        # Unpack the ready signal
-        seq, buf_idx = self.READY_STRUCT.unpack(read_msg)
+        # Unpack the message into chunk index and buffer index
+        chunk_idx, buf_idx = self.READY_STRUCT.unpack(read_msg)
 
-        # Make sure the sequence number is as expected
-        if seq != self.last_seq_written + 1:
-            raise ValueError(f"Out-of-order error: streaming chunk {seq}, expected {self.last_seq_written + 1}")
+        if chunk_idx == -1:
+            print("Writer: Received stop message.")
+            self.running = False
+            return
+
+        # Make sure the chunk index is as expected
+        if chunk_idx != self.last_written_chunk_idx + 1:
+            raise ValueError(f"Out-of-order error: streaming chunk {chunk_idx}, expected {self.last_written_chunk_idx + 1}")
         
         # Get the flattened view of the current chunk memory
         flat_buffer = self.buffer[buf_idx].reshape(-1)
@@ -147,20 +146,22 @@ class Writer(Process):
             print(f"DAQ error: {e}")
             raise
 
-        # Update the last sequence number written
-        self.last_seq_written = seq
+        # Update the last chunk index written
+        self.last_written_chunk_idx = chunk_idx
 
-        # Report back that the buffer is free
-        os.write(self.report_w, self.REPORT_STRUCT.pack(buf_idx))
+        # Report back that the buffer slot is free
+        os.write(self.report_w, self.REPORT_STRUCT.pack(chunk_idx, buf_idx))
 
     def _configure_device(self):
+        # Create a DAQ task
         self.task = self.ni.Task()
+
         # Add analog output channels
         for ao in self.ao_channels:
             self.task.ao_channels.add_ao_voltage_chan(
-                ao.name,
-                min_val=ao.min_val,
-                max_val=ao.max_val
+                f"{self.device_name}/ao{ao.channel_name}",
+                min_val=ao.min_value,
+                max_val=ao.max_value
             )
 
         # Add digital output channels
@@ -198,3 +199,28 @@ class Writer(Process):
 
         # Reset the timeout to the original value
         self.timeout = realtime_timeout
+
+    def cleanup(self):
+        """
+        Clean up all the resources specific to the Writer.
+        Shared memory will be closed by the manager.
+        """
+        try:
+            # If we have a task, wait for it to finish
+            if self.task:
+                print("Writer: Waiting for NI-DAQ task to finish...")
+                # Wait for 2x the card buffer worth of time
+                time.sleep(2.0 * self.outbuf_num_chunks * self.chunk_size / self.sample_rate)
+                
+                if self.task:
+                    self.task.stop()
+                    self.task.close()
+
+            # Close pipes
+            os.close(self.ready_r)
+            os.close(self.ready_w)
+            os.close(self.report_r)
+            os.close(self.report_w)
+
+        except Exception as e:
+            print(f"Error during cleanup: {e}")

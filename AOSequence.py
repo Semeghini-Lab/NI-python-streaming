@@ -19,26 +19,22 @@ class AOSequence:
     def _load_commands(cls):
         if cls._commands_loaded:
             return
-        # 1.0 find all atributes of Commands
-        for name in dir(Commands):
-            if not name.startswith('_'):
-                obj = getattr(Commands, name)
-                # 1.1 find all callable blocks of code
-                if callable(obj) and hasattr(obj, '__code__'):
-                    sig = inspect.signature(obj)
-                    params = list(sig.parameters.keys())
-                    # 1.2 extract all kwags (t is not a kwag)
-                    params = [p for p in params if p != 't']
-                    # 1.3 create a method each function in this class
-                    cls._create_class_method(name, obj, params)
+        # Find all analog output commands
+        for name,obj in inspect.getmembers(Commands, inspect.isfunction):
+            if hasattr(obj, '_category') and obj._category == 'analog_output':
+                # Extract the function parameters
+                params = list(filter(lambda x: x != 't', inspect.signature(obj).parameters.keys()))
+
+                # Create a method for the command
+                cls._create_class_method(name, obj, params)
         cls._commands_loaded = True
 
     @classmethod
     def _create_class_method(cls, func_name, command_func, param_names):
         '''
         func_name (str): name of the function
-        command_func: reference to the function in commands.py
-        param_names: names of the kwags for the function
+        command_func: reference to the function object in commands.py
+        param_names: names of the kwargs for the function
         '''
 
         # 2.0 create the version of the command to be added to this class
@@ -50,25 +46,26 @@ class AOSequence:
             # 2.2 validating parameters
             if t < 0:
                 raise ValueError(f"Start time must be >= 0, got {t} for {func_name}")
-            if duration <= 1.0/self.samp_rate:
-                raise ValueError(f"Duration must be > 1/sample_rate ({1.0/self.samp_rate} s), got {duration} for {func_name}")
+            if duration <= 1.0/self.sample_rate:
+                raise ValueError(f"Duration must be > 1/sample_rate ({1.0/self.sample_rate} s), got {duration} for {func_name}")
             for param in param_names:
                 if param not in kwargs:
                     raise ValueError(f"Missing required parameter '{param}' for {func_name}")
             
             # 2.3 convert from real time to sample time
-            start_sample = round(t * self.samp_rate)
-            end_sample = start_sample + round(duration * self.samp_rate) # end sample is exclusive
+            start_sample = round(t * self.sample_rate)
+            end_sample = start_sample + round(duration * self.sample_rate) # end sample is exclusive
             
             # 2.4 create and append instruction
-            instruction = Instruction(func=partial(command_func, **kwargs), start_samp=start_sample, end_samp=end_sample)
+            instruction = Instruction(func=partial(command_func, **kwargs), start_sample=start_sample, end_sample=end_sample)
             self.instructions.append(instruction)
         
         # 2.0 add method to this class
         setattr(cls, func_name, method)
 
-    def __init__(self, samp_rate=1e6, default_value=0.0, min_value=-10.0, max_value=10.0):
-        """Initialize an analog output sequence.
+    def __init__(self, channel_name, sample_rate, default_value=0.0, min_value=-10.0, max_value=10.0):
+        """
+        Initialize an analog output sequence.
         
         Args:
             samp_rate (int): Sample rate in Hz
@@ -76,9 +73,11 @@ class AOSequence:
             min_value (float): Minimum allowed output value
             max_value (float): Maximum allowed output value
 
-            TODO: nothing is being done with min and max value right now
+            TODO: nothing is being done with min and max value right now other than in the Writer.py class
+            TODO: do we want to clip the values to the min and max value in Worker.py?
         """
-        self.samp_rate = int(samp_rate)
+        self.sample_rate = sample_rate
+        self.sample_rate = int(sample_rate)
         self.default_value = default_value
         self.min_value = min_value
         self.max_value = max_value
@@ -109,21 +108,21 @@ class AOSequence:
             return
             
         # 3.0 sort instructions by start sample
-        self.instructions.sort(key=lambda x: x.start_samp)
+        self.instructions.sort(key=lambda x: x.start_sample)
         
         # 3.1 check that adjacent samples do not overlap
         for i in range(len(self.instructions) - 1):
             current = self.instructions[i]
             next = self.instructions[i + 1]
             
-            if current.end_samp > next.start_samp:
+            if current.end_sample > next.start_sample:
                 current_func = current.func.func.__name__
                 next_func = next.func.func.__name__
                 
-                current_start_time = current.start_samp / self.samp_rate
-                current_end_time = current.end_samp / self.samp_rate
-                next_start_time = next.start_samp / self.samp_rate
-                next_end_time = next.end_samp / self.samp_rate
+                current_start_time = current.start_sample / self.sample_rate
+                current_end_time = current.end_sample / self.sample_rate
+                next_start_time = next.start_sample / self.sample_rate
+                next_end_time = next.end_sample / self.sample_rate
                 raise ValueError(f"Instruction {current_func} ({current_start_time}s-{current_end_time}s) "
                                f"overlaps with {next_func} ({next_start_time}s-{next_end_time}s)")
         
@@ -134,20 +133,20 @@ class AOSequence:
         
         for instruction in self.instructions:
             # 3.2.1 check if there is a gap
-            if current_sample < instruction.start_samp:
+            if current_sample < instruction.start_sample:
                 gap_instruction = Instruction(
                     func=partial(const, value=last_value),
-                    start_samp=current_sample,
-                    end_samp=instruction.start_samp
+                    start_sample=current_sample,
+                    end_sample=instruction.start_sample
                 )
                 filled_instructions.append(gap_instruction)
             
             # 3.2.2 copy over current instruction
             filled_instructions.append(instruction)
-            current_sample = instruction.end_samp
+            current_sample = instruction.end_sample
             
             # 3.2.3. compute the end value of the current instruction
-            duration = (instruction.end_samp - instruction.start_samp) / self.samp_rate
+            duration = (instruction.end_sample - instruction.start_sample) / self.sample_rate
             end_time_array = np.array([duration]) 
             func = instruction.func.func
             params = instruction.func.keywords
@@ -157,8 +156,8 @@ class AOSequence:
         if current_sample < stopsamp:
             final_gap_instruction = Instruction(
                 func=partial(const, value=last_value),
-                start_samp=current_sample,
-                end_samp=int(stopsamp)
+                start_sample=current_sample,
+                end_sample=int(stopsamp)
             )
             filled_instructions.append(final_gap_instruction)
         
@@ -175,7 +174,7 @@ class AOSequence:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    seq = AOSequence()
+    seq = AOSequence(channel_name="ao0", sample_rate=1e6)
     
     seq.const(1.0, 1.0, value=5.0) 
     seq.linramp(3.0, 1.0, start=0, end=10) 
@@ -183,8 +182,8 @@ if __name__ == "__main__":
     
     print(f"Before compilation - {len(seq.instructions)} instructions:")
     for i, instruction in enumerate(seq.instructions):
-        start_time = instruction.start_samp / seq.samp_rate
-        end_time = instruction.end_samp / seq.samp_rate
+        start_time = instruction.start_sample / seq.sample_rate
+        end_time = instruction.end_sample / seq.sample_rate
         func_name = instruction.func.func.__name__
         print(f"  {i}: {func_name} from {start_time}s to {end_time}s")
     
@@ -192,15 +191,15 @@ if __name__ == "__main__":
     
     print(f"\nAfter compilation - {len(seq.instructions)} instructions (gaps filled with const):")
     for i, instruction in enumerate(seq.instructions):
-        start_time = instruction.start_samp / seq.samp_rate
-        end_time = instruction.end_samp / seq.samp_rate
+        start_time = instruction.start_sample / seq.sample_rate
+        end_time = instruction.end_sample / seq.sample_rate
         func_name = instruction.func.func.__name__
         params = instruction.func.keywords
         print(f"  {i}: {func_name} from {start_time}s to {end_time}s, params: {params}")
     
     # Test overlap detection with improved error message
     print("\nTesting overlap detection:")
-    seq_overlap = AOSequence()
+    seq_overlap = AOSequence(channel_name="ao0", sample_rate=1e6)
     seq_overlap.const(1.0, 2.0, value=5.0)  # 1s-3s
     seq_overlap.sine(2.5, 1.0, freq=1, amp=2, phase=0)  # 2.5s-3.5s (overlaps!)
     
@@ -220,12 +219,12 @@ if __name__ == "__main__":
     
     # Fill in values from each instruction
     for instruction in seq.instructions:
-        start_idx = instruction.start_samp
-        end_idx = instruction.end_samp
+        start_idx = instruction.start_sample
+        end_idx = instruction.end_sample
         
         # Create time array for this instruction (relative to instruction start)
         n_samples = end_idx - start_idx
-        t_instruction = np.linspace(0, (end_idx - start_idx) / seq.samp_rate, n_samples)
+        t_instruction = np.linspace(0, (end_idx - start_idx) / seq.sample_rate, n_samples)
         
         # Evaluate the instruction function
         func = instruction.func.func
@@ -245,8 +244,8 @@ if __name__ == "__main__":
     
     # Add vertical lines to show instruction boundaries
     for instruction in seq.instructions:
-        start_time = instruction.start_samp / seq.samp_rate
-        end_time = instruction.end_samp / seq.samp_rate
+        start_time = instruction.start_sample / seq.sample_rate
+        end_time = instruction.end_sample / seq.sample_rate
         func_name = instruction.func.func.__name__
         
         ax.axvline(start_time, color='red', linestyle='--', alpha=0.5)

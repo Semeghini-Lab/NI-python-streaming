@@ -5,7 +5,9 @@ import os
 import struct
 import numpy as np
 import time
+import bisect
 from multiprocessing import Process, shared_memory
+from AOSequence import AOSequence
 
 class Worker(Process):
     """
@@ -13,8 +15,8 @@ class Worker(Process):
     into shared memory, and reports results back via another pipe.
     """
 
-    ASSIGN_STRUCT = struct.Struct('>q i I I')  # (seq, buf_idx, ch_start, ch_end)
-    REPORT_STRUCT = struct.Struct('>q i I d')  # (seq, buf_idx, worker_id, compute_time)
+    ASSIGN_STRUCT = struct.Struct('>q i I I')  # (chunk_idx, buf_idx, ch_start, ch_end)
+    REPORT_STRUCT = struct.Struct('>q i I d')  # (chunk_idx, buf_idx, worker_id, compute_time)
 
     def __init__(
             self,
@@ -23,6 +25,7 @@ class Worker(Process):
             sample_rate: float,  # Sample rate in Hz
             chunk_size: int,  # Size of each chunk in samples
             num_channels: int,  # Total number of channels
+            ao_channels: list[AOSequence],  # List of analog output channels
             pool_size: int,  # Size of the memory pool
             ) -> None:
         super().__init__(name=f"Worker-{worker_id}")
@@ -32,6 +35,11 @@ class Worker(Process):
         self.chunk_size = chunk_size
         self.num_channels = num_channels
         self.pool_size = pool_size
+        self.ao_channels = ao_channels
+
+        # Initialize the instruction sets for each channel
+        self.ins_set = [ch.instructions for ch in self.ao_channels]
+        self.ins_starts = [[ins.start_sample for ins in ch.instructions] for ch in self.ao_channels]
 
         # Create all communication pipes in parent
         self.assign_r, self.assign_w = os.pipe()
@@ -52,71 +60,86 @@ class Worker(Process):
             )
 
             while True:
-                print(f"Worker {self.worker_id} waiting for assignment...")
                 # Block until we get exactly 16 bytes of assignment data
                 assign_data = os.read(self.assign_r, self.ASSIGN_STRUCT.size)
                 if not assign_data:
-                    print(f"Worker {self.worker_id} got EOF")
-                    break
+                    raise EOFError(f"Worker {self.worker_id} got EOF")
 
                 # Parse data
                 if len(assign_data) < self.ASSIGN_STRUCT.size:
                     raise ValueError(f"Received incomplete assignment data in Worker({self.worker_id}).")
                 
-                seq, buf_idx, ch_start, ch_end = self.ASSIGN_STRUCT.unpack(assign_data)
-                print(f"Worker {self.worker_id} received assignment: seq={seq}, buf_idx={buf_idx}, ch_start={ch_start}, ch_end={ch_end}")
+                chunk_idx, buf_idx, ch_start, ch_end = self.ASSIGN_STRUCT.unpack(assign_data)
+                print(f"Worker {self.worker_id} received assignment: chunk_idx={chunk_idx}, buf_idx={buf_idx}, ch_start={ch_start}, ch_end={ch_end}")
+
+                if chunk_idx == -1:
+                    print(f"Worker {self.worker_id} received stop message.")
+                    break
 
                 # Start the timer for computation
                 compute_time = time.time()
 
-                # Compute absolute sample indices for this chunk
-                base_idx = seq * self.chunk_size
-
-                # Compute time vector in seconds
-                t = np.arange(base_idx, base_idx + self.chunk_size) / self.sample_rate
-
-                T0, T1 = seq * self.chunk_size, (seq + 1) * self.chunk_size
+                # Compute the ends of the chunk in sample indices
+                chunk_start, chunk_end = chunk_idx * self.chunk_size, (chunk_idx + 1) * self.chunk_size
 
                 # Time generation of the assigned channels
                 for ch in range(ch_start, ch_end):
-                    inst_set = self.inst_set[ch]
-                    in_chunk_idx = 0
-                    while self.current_inst_idx[ch] < len(inst_set):
+                    # Get the instruction set for the channel
+                    ins_set = self.ins_set[ch]
+                    ins_starts = self.ins_starts[ch]
+
+                    # Find the first instruction start time that crosses the chunk start boundary
+                    ins_idx = bisect.bisect_right(ins_starts, chunk_start)-1
+                    if ins_idx < 0:
+                        raise ValueError(f"Worker {self.worker_id} encountered an error while processing channel {ch} at chunk start {chunk_start}.")
+
+                    # Start the counter within the chunk
+                    in_chunk_pos = 0
+                    while in_chunk_pos < self.chunk_size: # This relies on chunk alignment at compile time
                         # Get the current instruction
-                        (ins_t0,ins_t1) = inst_set[self.current_inst_idx[ch]].times
-                        func = inst_set[self.current_inst_idx[ch]].func
+                        (ins_start,ins_end) = ins_set[ins_idx].start_sample, ins_set[ins_idx].end_sample
+                        
+                        # Get the function of the current instruction
+                        func = ins_set[ins_idx].func
 
                         # Calculate the time within the instruction
-                        t = np.arange(max(ins_t0, T0)-T0, min(ins_t1, T1)-T0) / self.sample_rate
-
-                        # Calculate the indices of the time within the buffer
-                        buf_st, buf_end = in_chunk_idx, in_chunk_idx + len(t)
+                        t = np.arange(max(ins_start, chunk_start)-ins_start, min(ins_end, chunk_end)-ins_start) / self.sample_rate
 
                         # Write the data to the buffer
-                        self.buffer[buf_idx, ch, buf_st:buf_end] = func(t)
+                        self.buffer[buf_idx, ch, in_chunk_pos:in_chunk_pos+len(t)] = func(t)
 
                         # Move to the next instruction
-                        self.current_inst_idx[ch] += 1
+                        ins_idx += 1
 
                         # Increment the in-chunk index
-                        in_chunk_idx += len(t)
-
-                        # If the current instruction ends after the chunk boundary, break
-                        if ins_t1 > T1:
-                            break
+                        in_chunk_pos += len(t)
 
                 # End the timer for computation
                 compute_time = time.time() - compute_time
 
                 # Prepare report data
-                report_msg = self.REPORT_STRUCT.pack(seq, buf_idx, self.worker_id, compute_time)
+                report_msg = self.REPORT_STRUCT.pack(chunk_idx, buf_idx, self.worker_id, compute_time)
 
                 # Send report back to the main process
                 os.write(self.done_w, report_msg)
 
         except Exception as e:
-            print(f"Worker {self.worker_id} failed: {e}")
+            print(f"Worker {self.worker_id}: {e}")
         finally:
             # Cleanup
-            if self.shm:
-                self.shm.close()
+            self.cleanup()
+
+    def cleanup(self):
+        """
+        Clean up all the resources specific to the Worker.
+        Shared memory will be closed by the manager.
+        """
+        try:
+            # Close pipes
+            os.close(self.assign_r)
+            os.close(self.assign_w)
+            os.close(self.done_r)
+            os.close(self.done_w)
+
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
