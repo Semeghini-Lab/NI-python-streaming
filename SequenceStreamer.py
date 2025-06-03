@@ -1,19 +1,22 @@
 # SequenceStreamer.py
 # Created by: Marcin Kalinowski & Yi Zhu
 
-import os
+import os, sys
 import time
 import struct
 import numpy as np
 import selectors
+import zmq
 
 from AOSequence import AOSequence
 
 from Worker import Worker
-from Writer import Writer, TEST_MODE
+from Writer import Writer
 
 import multiprocessing
-multiprocessing.set_start_method("fork")
+
+if sys.platform == "darwin":
+    multiprocessing.set_start_method("fork")
 
 
 class SequenceStreamer:
@@ -71,16 +74,21 @@ class SequenceStreamer:
 
         print(f"Shared memory segment '{shm_name}' created with size {shm_size} bytes: ({self.pool_size}x [{self.chunk_size} chunk size for {self.num_channels} channels]).")
 
-        # Initialize file descriptors for inter-process communication with the writer.
-        self.chunk_ready_child_fd, self.chunk_ready_fd = None, None
-        self.slot_free_fd, self.slot_free_child_fd = None, None
+        # Initialize ZMQ context and sockets for writer communication
+        self.context = zmq.Context()
 
-        # Initialize file descriptors for inter-process communication with the workers.
-        self.worker_assign_fds = []
-        self.worker_done_fds = []
+        self.ready_socket = None
+        self.report_socket = None
 
-        self.worker_assign_child_fds = []
-        self.worker_done_child_fds = []
+        # Initialize ZMQ sockets for worker communication
+        self.worker_assign_sockets = []  # PUSH sockets for sending assignments
+        self.worker_done_sockets = []    # PULL sockets for receiving completion reports
+
+        # Initialize a callback map for monitored events
+        self.event_callbacks = {}
+
+        # Create poller for dispatching messages
+        self.poller = zmq.Poller()
 
         # Compute channel ranges
         channels_per_worker = self.num_channels // self.num_workers
@@ -102,18 +110,89 @@ class SequenceStreamer:
         self.processed_chunks = {} # Dictionary of of the form {chunk: set(remaining channel groups)]}
         self.processed_chunk_slots = {} # Keep track of which chunk is processed in which slots (sanity check)
 
-        # Selector for worker and free pipes
-        self.sel = selectors.DefaultSelector()
+    def start(self):
+        try:
+            # Spawn worker processes
+            for wid in range(self.num_workers):
+                # Create and bind worker assign socket
+                assign_socket = self.context.socket(zmq.PUSH)
+                assign_port = assign_socket.bind_to_random_port("tcp://127.0.0.1")
+                self.worker_assign_sockets.append(assign_socket)
+                print(f"SequenceStreamer: Bound worker {wid} assign socket to port {assign_port}")
 
-    def _process_worker_done(self, fd):
-        """
-        Process a worker done notification.
-        This method reads the sequence number and buffer index from the pipe,
-        marks the slot as available, and updates the processed sequences.
-        """
-        data = os.read(fd, self.WORKER_DONE_STRUCT.size)
-        if len(data) < self.WORKER_DONE_STRUCT.size:
-            raise ValueError("Received incomplete worker done notification.")
+                # Create and bind worker done socket
+                done_socket = self.context.socket(zmq.PULL)
+                done_port = done_socket.bind_to_random_port("tcp://127.0.0.1")
+                self.worker_done_sockets.append(done_socket)
+                print(f"SequenceStreamer: Bound worker {wid} done socket to port {done_port}")
+
+                # Register worker done socket with poller
+                self.poller.register(done_socket, zmq.POLLIN)
+                self.event_callbacks[done_socket] = self._process_worker_done_data
+
+                worker = Worker(
+                    worker_id=wid,
+                    ao_channels=self.ao_seqs,
+                    shm_name=self.shm.name,
+                    sample_rate=self.sample_rate,
+                    chunk_size=self.chunk_size,
+                    num_channels=self.num_channels,
+                    pool_size=self.pool_size,
+                    assign_port=assign_port,
+                    done_port=done_port,
+                )
+                worker.daemon = True
+                worker.start()
+
+                # Add as available worker
+                self.available_workers.append(wid)
+
+            # Create and bind writer sockets
+            self.ready_socket = self.context.socket(zmq.PUSH)
+            self.report_socket = self.context.socket(zmq.PULL)
+            
+            # Bind ZMQ sockets to random ports
+            self.ready_port = self.ready_socket.bind_to_random_port("tcp://127.0.0.1")
+            self.report_port = self.report_socket.bind_to_random_port("tcp://127.0.0.1")
+            print(f"SequenceStreamer: Bound writer sockets to ports ready={self.ready_port}, report={self.report_port}")
+
+            # Register writer sockets with poller
+            self.poller.register(self.report_socket, zmq.POLLIN)
+            self.event_callbacks[self.report_socket] = self._process_slot_free
+
+            # Spawn writer process
+            self.writer = Writer(
+                shm_name=self.shm.name,
+                sample_rate=self.sample_rate,
+                chunk_size=self.chunk_size,
+                outbuf_num_chunks=self.num_chunks_to_stream,
+                pool_size=self.pool_size,
+                device_name=self.device_name,
+                ao_channels=self.ao_seqs,
+                do_channels=[],
+                ready_port=self.ready_port,
+                report_port=self.report_port,
+            )
+            self.writer.daemon = True
+            self.writer.start()
+
+            # Start the manager loop
+            self._manager_loop()
+
+        except Exception as e:
+            print(f"Error in start: {e}")
+            self.cleanup()
+            raise
+
+    def _assign_chunk(self, worker_id: int, chunk_idx: int, buf_idx: int, ch_start: int, ch_end: int):
+        """Assign a chunk to a worker."""
+        assign_data = self.WORKER_ASSIGN_STRUCT.pack(chunk_idx, buf_idx, ch_start, ch_end)
+        print(f"Assigning chunk {chunk_idx} to worker {worker_id}")
+        self.worker_assign_sockets[worker_id].send(assign_data)
+
+    def _process_worker_done_data(self, socket):
+        """Process worker done data."""
+        data = socket.recv()
         chunk_idx, buf_idx, worker_id, compute_time = self.WORKER_DONE_STRUCT.unpack(data)
 
         if chunk_idx not in self.processed_chunks:
@@ -140,15 +219,12 @@ class SequenceStreamer:
             # Write the chunk ready notification to the writer
             self._assign_slot_write(chunk_idx, buf_idx)
 
-    def _process_slot_free(self, fd):
+    def _process_slot_free(self, socket):
         """
         Process a slot free notification from the writer.
         This method reads the slot index from the pipe and adds it as available.
         """
-        data = os.read(fd, self.SLOT_FREE_STRUCT.size)
-        if len(data) < self.SLOT_FREE_STRUCT.size:
-            raise ValueError("Received incomplete slot free notification.")
-        
+        data = socket.recv()
         chunk_idx, buf_idx = self.SLOT_FREE_STRUCT.unpack(data)
         
         # Add the slot to the available slot list
@@ -159,20 +235,16 @@ class SequenceStreamer:
             self.running = False
             print("Last chunk streamed, stopping manager loop.")
 
-    def _assign_chunk(self, worker_id: int, chunk_idx: int, buf_idx: int, ch_start: int, ch_end: int):
-        """Assign a chunk to a worker."""
-        assign_data = self.WORKER_ASSIGN_STRUCT.pack(chunk_idx, buf_idx, ch_start, ch_end)
-        os.write(self.worker_assign_fds[worker_id], assign_data)
-
     def _assign_slot_write(self, chunk_idx: int, buf_idx: int):
         """
         Notify the writer that a chunk is ready to be written.
         This method writes the chunk index and buffer index to the pipe.
         """
-        ready_data = self.CHUNK_READY_STRUCT.pack(chunk_idx, buf_idx)
-        os.write(self.chunk_ready_fd, ready_data)
+        print(f"Sending ready signal for chunk {chunk_idx} in slot {buf_idx}")
+        self.ready_socket.send(self.CHUNK_READY_STRUCT.pack(chunk_idx, buf_idx))
 
     def _manager_loop(self):
+        print(f"Starting manager loop with {self.num_chunks_to_stream} chunks to stream.")
         # Start the manager loop
         self.running = True
 
@@ -206,121 +278,57 @@ class SequenceStreamer:
                     self.next_calc_channel_group = 0
                     self.next_calc_chunk += 1
 
-            # Check for completed chunks from workers and free slots from writer
-            events = self.sel.select(timeout=1e-6)
-            for key, _ in events:
-                callback = key.data
-                callback(key.fileobj)
+            # Poll for messages from workers and writer
+           # socks = dict()
+            
+            # Process events
+            for socket, _ in self.poller.poll(0):
+                self.event_callbacks[socket](socket)
 
         # Send messages to stop the writer and workers
-        for fd in self.worker_assign_fds:
-            os.write(fd, self.WORKER_ASSIGN_STRUCT.pack(-1, -1, 0, 0))
+        for socket in self.worker_assign_sockets:
+            socket.send(self.WORKER_ASSIGN_STRUCT.pack(-1, -1, 0, 0))
 
-        os.write(self.chunk_ready_fd, self.CHUNK_READY_STRUCT.pack(-1, -1))
+        self.ready_socket.send(self.CHUNK_READY_STRUCT.pack(-1, -1))
 
         # Wait for the writer and workers to finish
-        self.writer.join(timeout=1.0)
+        self.writer.join(timeout=1.0) # in seconds
         for worker in self.workers:
-            worker.join(timeout=0.1)
+            worker.join(timeout=0.1) # in seconds
 
         print("Sequence completed.")
 
-    def start(self):
+    def cleanup(self):
+        """Clean up all resources."""
         try:
-            # Spawn worker processes
-            for wid in range(self.num_workers):
-                worker = Worker(
-                    worker_id=wid,
-                    ao_channels=self.ao_seqs,
-                    shm_name=self.shm.name,
-                    sample_rate=self.sample_rate,
-                    chunk_size=self.chunk_size,
-                    num_channels=self.num_channels,
-                    pool_size=self.pool_size
-                )
-                worker.daemon = True
-                worker.start()
+            try:
+                self.shm.close()
+                self.shm.unlink()
+            except FileNotFoundError:
+                pass
 
-                # Store the pipe ends we need
-                self.worker_assign_fds.append(worker.assign_w)
-                self.worker_done_fds.append(worker.done_r)
-                
-                # Register the done pipe with the selector
-                self.sel.register(worker.done_r, selectors.EVENT_READ, self._process_worker_done)
-                os.set_blocking(worker.done_r, False)
-                
-                self.workers.append(worker)
-                self.available_workers.append(wid)
+            # Close ZMQ sockets and context
+            if self.ready_socket:
+                self.ready_socket.close()
+            if self.report_socket:
+                self.report_socket.close()
+            for socket in self.worker_assign_sockets:
+                socket.close()
+            for socket in self.worker_done_sockets:
+                socket.close()
+            self.context.term()
 
-            # Wait for the workers to start up
-            time.sleep(0.1)
-
-            # Spawn the writer process
-            writer = Writer(
-                shm_name=self.shm.name,
-                sample_rate=self.sample_rate,
-                chunk_size=self.chunk_size,
-                outbuf_num_chunks=self.pool_size,
-                pool_size=self.pool_size,
-                device_name=self.device_name,
-                ao_channels=self.ao_seqs,
-                do_channels=[]  # Placeholder for digital output channels
-            )
-            writer.daemon = True
-            writer.start()
-            
-            # Store the pipe ends we need
-            self.chunk_ready_fd = writer.ready_w
-            self.slot_free_fd = writer.report_r
-            
-            # Register the writer's pipe with the selector
-            self.sel.register(self.slot_free_fd, selectors.EVENT_READ, self._process_slot_free)
-            os.set_blocking(self.slot_free_fd, False)
-            
-            self.writer = writer
-
-            # Start the manager loop
-            print(f"Starting streaming of {self.num_chunks_to_stream} chunks on {self.num_channels} channels...")
-            self._manager_loop()
-
-        except KeyboardInterrupt:
-            print("\nReceived keyboard interrupt, cleaning up...")
         except Exception as e:
-            print(f"Error in sequence streamer: {e}")
+            print(f"Error during cleanup: {e}")
 
     def __enter__(self):
-        """Context manager entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - ensures cleanup."""
         self.cleanup()
 
     def __del__(self):
-        """Destructor - safety net for cleanup."""
         self.cleanup()
-
-    def cleanup(self):
-        """Clean up all resources."""
-        # Stop all processes
-        for worker in self.workers:
-            worker.terminate()
-            worker.join(timeout=1.0)
-
-        self.writer.terminate()
-        self.writer.join(timeout=1.0)
-
-        # Close shared memory
-        try:
-            self.shm.close()
-            self.shm.unlink()  # This will delete the shared memory segment
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            print(f"Error unlinking shared memory: {e}")
-
-        # Close selector
-        self.sel.close()
 
 
         

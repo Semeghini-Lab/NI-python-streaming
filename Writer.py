@@ -4,10 +4,10 @@
 import os
 import time
 import struct
-import select
 import numpy as np
 from AOSequence import AOSequence
 from multiprocessing import Process, shared_memory
+import zmq
 
 TEST_MODE = True
 
@@ -34,7 +34,9 @@ class Writer(Process):
             device_name: str,  # Name of the DAQ device
             ao_channels: list[AOSequence],  # List of analog output channel named tuples
             do_channels: list,  # List of digital output channels named tuples
-            timeout: float = 100*1e-6,  # Grace period after next chunk is expected
+            ready_port: int,  # Port for receiving ready signals
+            report_port: int,  # Port for sending reports
+            timeout: float = 100*1e-6,  # Grace period after next chunk is expected (in seconds)
     ) -> None:
         super().__init__(name="Writer")
         self.shm_name = shm_name
@@ -47,18 +49,21 @@ class Writer(Process):
         self.do_channels = do_channels
         self.num_ao_channels = len(ao_channels)
         self.num_do_channels = len(do_channels)
-        self.timeout = timeout
+        self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000)
         self.running = True
 
-        # Create all communication pipes in parent
-        self.ready_r, self.ready_w = os.pipe()
-        self.report_r, self.report_w = os.pipe()
+        # Store ports
+        self.ready_port = ready_port
+        self.report_port = report_port
 
         # These will be set in run()
         self.shm = None
         self.buffer = None
         self.task = None
         self.writer = None
+        self.context = None
+        self.ready_socket = None
+        self.report_socket = None
 
     def run(self):
         if not TEST_MODE:
@@ -66,6 +71,19 @@ class Writer(Process):
             self.ni = ni
 
         try:
+            # Create ZMQ context and sockets
+            self.context = zmq.Context()
+            # Writer receives ready signals
+            self.ready_socket = self.context.socket(zmq.PULL)
+            # Writer sends reports
+            self.report_socket = self.context.socket(zmq.PUSH)
+            
+            # Connect to ports
+            self.ready_socket.connect(f"tcp://127.0.0.1:{self.ready_port}")
+            self.report_socket.connect(f"tcp://127.0.0.1:{self.report_port}")
+            
+            print(f"Writer: Connected to ports ready={self.ready_port}, report={self.report_port}")
+
             # Attach to shared memory segment
             self.shm = shared_memory.SharedMemory(name=self.shm_name)
             self.buffer = np.ndarray(
@@ -104,7 +122,7 @@ class Writer(Process):
         except Exception as e:
             print(f"Writer: {e}.")
             # Report that the task is stopped (will be terminated by the manager)
-            os.write(self.report_w, self.REPORT_STRUCT.pack(-1, -1))
+            self.report_socket.send(self.REPORT_STRUCT.pack(-1, -1))
         finally:
             self.cleanup()
 
@@ -113,19 +131,14 @@ class Writer(Process):
         Callback function to write data to the DAQ device.
         This is called every time a chunk of samples is transferred from the buffer.
         """
-        # Wait for the ready signal from the pipe up to timeout
-        rlist, _, _ = select.select([self.ready_r], [], [], self.timeout)
-        if not rlist:
-            raise UnderrunError(f"Timed out after {self.timeout*1e3:.3f}ms waiting for ready signal from the pipe")
+        # Wait for the ready signal from the pipe up to timeout (in milliseconds)        
+        if self.ready_socket.poll(timeout=self.timeout):
+            # If we got a message from the manager, read it
+            data = self.ready_socket.recv()
+            chunk_idx, buf_idx = self.READY_STRUCT.unpack(data)
+        else:
+            raise UnderrunError(f"Timed out after {self.timeout:.2f}ms waiting for ready signal from the pipe")
         
-        # If we got a message from the manager, read it
-        read_msg = os.read(self.ready_r, self.READY_STRUCT.size)
-        if len(read_msg) < self.READY_STRUCT.size:
-            raise ValueError("Received incomplete ready signal data.")
-        
-        # Unpack the message into chunk index and buffer index
-        chunk_idx, buf_idx = self.READY_STRUCT.unpack(read_msg)
-
         if chunk_idx == -1:
             print("Writer received stop message.")
             self.running = False
@@ -150,7 +163,7 @@ class Writer(Process):
         self.last_written_chunk_idx = chunk_idx
 
         # Report back that the buffer slot is free
-        os.write(self.report_w, self.REPORT_STRUCT.pack(chunk_idx, buf_idx))
+        self.report_socket.send(self.REPORT_STRUCT.pack(chunk_idx, buf_idx))
 
     def _configure_device(self):
         # Create a DAQ task
@@ -191,7 +204,7 @@ class Writer(Process):
         realtime_timeout = self.timeout
 
         # Set longer timeout for initial buffer loading
-        self.timeout = timeout
+        self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000)
 
         # Preload the buffer
         for i in range(self.outbuf_num_chunks):
@@ -216,11 +229,10 @@ class Writer(Process):
                     self.task.stop()
                     self.task.close()
 
-            # Close pipes
-            os.close(self.ready_r)
-            os.close(self.ready_w)
-            os.close(self.report_r)
-            os.close(self.report_w)
+            # Close ZMQ sockets and context
+            self.ready_socket.close()
+            self.report_socket.close()
+            self.context.term()
 
         except Exception as e:
             print(f"Error during cleanup: {e}")

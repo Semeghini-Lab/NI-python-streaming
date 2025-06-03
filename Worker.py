@@ -8,28 +8,32 @@ import time
 import bisect
 from multiprocessing import Process, shared_memory
 from AOSequence import AOSequence
+import zmq
 
 class Worker(Process):
     """
-    Worker process: reads chunk assignments via a pipe, compute its subset of channels
-    into shared memory, and reports results back via another pipe.
+    Worker process: receives chunk assignments via ZMQ, computes the data,
+    and reports results back via ZMQ.
     """
 
     ASSIGN_STRUCT = struct.Struct('>q i I I')  # (chunk_idx, buf_idx, ch_start, ch_end)
-    REPORT_STRUCT = struct.Struct('>q i I d')  # (chunk_idx, buf_idx, worker_id, compute_time)
+    DONE_STRUCT = struct.Struct('>q i I d')  # (chunk_idx, buf_idx, worker_id, compute_time)
 
     def __init__(
             self,
-            worker_id: int,  # Worker ID for identification
+            worker_id: int,  # ID of this worker
+            ao_channels: list[AOSequence],  # List of analog output channel named tuples
             shm_name: str,  # Name of the shared memory segment
             sample_rate: float,  # Sample rate in Hz
             chunk_size: int,  # Size of each chunk in samples
             num_channels: int,  # Total number of channels
-            ao_channels: list[AOSequence],  # List of analog output channels
-            pool_size: int,  # Size of the memory pool
-            ) -> None:
+            pool_size: int,  # Size of the memory pool for calculations
+            assign_port: int,  # Port for receiving assignments
+            done_port: int,  # Port for sending completion reports
+    ) -> None:
         super().__init__(name=f"Worker-{worker_id}")
         self.worker_id = worker_id
+        self.ao_channels = ao_channels
         self.shm_name = shm_name
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
@@ -41,16 +45,32 @@ class Worker(Process):
         self.ins_set = [ch.instructions for ch in self.ao_channels]
         self.ins_starts = [[ins.start_sample for ins in ch.instructions] for ch in self.ao_channels]
 
-        # Create all communication pipes in parent
-        self.assign_r, self.assign_w = os.pipe()
-        self.done_r, self.done_w = os.pipe()
+        # Save ports for communication
+        self.assign_port = assign_port
+        self.done_port = done_port
 
         # These will be set in run()
         self.shm = None
         self.buffer = None
+        self.context = None
+        self.assign_socket = None
+        self.done_socket = None
 
     def run(self):
         try:
+            # Create ZMQ context and sockets
+            self.context = zmq.Context()
+            # Worker receives assignments
+            self.assign_socket = self.context.socket(zmq.PULL)
+            # Worker sends completion reports
+            self.done_socket = self.context.socket(zmq.PUSH)
+            
+            # Connect to ports
+            self.assign_socket.connect(f"tcp://127.0.0.1:{self.assign_port}")
+            self.done_socket.connect(f"tcp://127.0.0.1:{self.done_port}")
+            
+            print(f"Worker {self.worker_id}: Connected to ports assign={self.assign_port}, done={self.done_port}")
+
             # Attach to shared memory segment
             self.shm = shared_memory.SharedMemory(name=self.shm_name)
             self.buffer = np.ndarray(
@@ -59,18 +79,12 @@ class Worker(Process):
                 buffer=self.shm.buf
             )
 
+            # Main worker loop
             while True:
-                # Block until we get exactly 16 bytes of assignment data
-                assign_data = os.read(self.assign_r, self.ASSIGN_STRUCT.size)
-                if not assign_data:
-                    raise EOFError(f"Worker {self.worker_id} got EOF")
+                # Wait for assignment
+                data = self.assign_socket.recv()
+                chunk_idx, buf_idx, ch_start, ch_end = self.ASSIGN_STRUCT.unpack(data)
 
-                # Parse data
-                if len(assign_data) < self.ASSIGN_STRUCT.size:
-                    raise ValueError(f"Received incomplete assignment data in Worker({self.worker_id}).")
-                
-                chunk_idx, buf_idx, ch_start, ch_end = self.ASSIGN_STRUCT.unpack(assign_data)
-                
                 if chunk_idx == -1:
                     print(f"Worker {self.worker_id} received stop message.")
                     break
@@ -116,16 +130,15 @@ class Worker(Process):
                 # End the timer for computation
                 compute_time = time.time() - compute_time
 
-                # Prepare report data
-                report_msg = self.REPORT_STRUCT.pack(chunk_idx, buf_idx, self.worker_id, compute_time)
+                # Prepare done message
+                done_msg = self.DONE_STRUCT.pack(chunk_idx, buf_idx, self.worker_id, compute_time)
 
-                # Send report back to the main process
-                os.write(self.done_w, report_msg)
+                # Send done message back to the main process
+                self.done_socket.send(done_msg)
 
         except Exception as e:
             print(f"Worker {self.worker_id}: {e}")
         finally:
-            # Cleanup
             self.cleanup()
 
     def cleanup(self):
@@ -133,12 +146,4 @@ class Worker(Process):
         Clean up all the resources specific to the Worker.
         Shared memory will be closed by the manager.
         """
-        try:
-            # Close pipes
-            os.close(self.assign_r)
-            os.close(self.assign_w)
-            os.close(self.done_r)
-            os.close(self.done_w)
-
-        except Exception as e:
-            print(f"Error during cleanup: {e}")
+        pass
