@@ -1,58 +1,70 @@
 import inspect
 from functools import partial
+import Commands
 from Commands import *
 from Instruction import *
 import numpy as np
 
 class AOSequence:
+    '''
+    Tracks the instructions for a single analog channel. The instruction methods in the class are
+    programatically generated from Commands.py. During compilation, we check for conflicting instructions
+    and fill any gaps (samples with no instructions) with the const instruction of the last value.
+    '''
 
+    # parse Commands.py once, the first time an object of this class is created
     _commands_loaded = False
 
     @classmethod
     def _load_commands(cls):
         if cls._commands_loaded:
             return
-        try:
-            import Commands            
-            for name in dir(Commands):
-                if not name.startswith('_'):
-                    obj = getattr(Commands, name)
-                    if callable(obj) and hasattr(obj, '__code__'):
-                        sig = inspect.signature(obj)
-                        params = list(sig.parameters.keys())
-                        params = [p for p in params if p != 't']
-                        cls._create_class_method(name, obj, params)
-            cls._commands_loaded = True
-                    
-        except Exception as e:
-            print(f"Warning: Could not load Commands: {e}")
-            cls._commands_loaded = True
+        # 1.0 find all atributes of Commands
+        for name in dir(Commands):
+            if not name.startswith('_'):
+                obj = getattr(Commands, name)
+                # 1.1 find all callable blocks of code
+                if callable(obj) and hasattr(obj, '__code__'):
+                    sig = inspect.signature(obj)
+                    params = list(sig.parameters.keys())
+                    # 1.2 extract all kwags (t is not a kwag)
+                    params = [p for p in params if p != 't']
+                    # 1.3 create a method each function in this class
+                    cls._create_class_method(name, obj, params)
+        cls._commands_loaded = True
 
     @classmethod
     def _create_class_method(cls, func_name, command_func, param_names):
+        '''
+        func_name (str): name of the function
+        command_func: reference to the function in commands.py
+        param_names: names of the kwags for the function
+        '''
 
+        # 2.0 create the version of the command to be added to this class
         def method(self, t, duration, **kwargs):
+            # 2.1 do not allow instructions to be added if the sequence has been compiled
             if self.is_compiled:
                 raise RuntimeError(f"Cannot add {func_name} instruction: sequence is already compiled. Create a new sequence or clear existing instructions.")
-                
+            
+            # 2.2 validating parameters
             if t < 0:
                 raise ValueError(f"Start time must be >= 0, got {t} for {func_name}")
             if duration <= 1.0/self.samp_rate:
                 raise ValueError(f"Duration must be > 1/sample_rate ({1.0/self.samp_rate} s), got {duration} for {func_name}")
-            
-            # validate that all required parameters are provided
             for param in param_names:
                 if param not in kwargs:
                     raise ValueError(f"Missing required parameter '{param}' for {func_name}")
             
+            # 2.3 convert from real time to sample time
             start_sample = round(t * self.samp_rate)
             end_sample = start_sample + round(duration * self.samp_rate) # end sample is exclusive
             
-            # Simply append instruction - no sorting or overlap checking during insertion
+            # 2.4 create and append instruction
             instruction = Instruction(func=partial(command_func, **kwargs), start_samp=start_sample, end_samp=end_sample)
             self.instructions.append(instruction)
         
-        # print(f'Created method {func_name}')
+        # 2.0 add method to this class
         setattr(cls, func_name, method)
 
     def __init__(self, samp_rate=1e6, default_value=0.0, min_value=-10.0, max_value=10.0):
@@ -60,9 +72,11 @@ class AOSequence:
         
         Args:
             samp_rate (int): Sample rate in Hz
-            default_value (float): Default output value used to fill gaps
+            default_value (float): Default output value
             min_value (float): Minimum allowed output value
             max_value (float): Maximum allowed output value
+
+            TODO: nothing is being done with min and max value right now
         """
         self.samp_rate = int(samp_rate)
         self.default_value = default_value
@@ -74,22 +88,17 @@ class AOSequence:
         self.__class__._load_commands()
 
     def compile(self, stopsamp):
-        """Compile the sequence with the given stop time.
+        """Compile the sequence with the given stop stample.
         
-        This method:
-        1. Sorts instructions by start time
+        1. Sorts instructions by start sample
         2. Checks for overlaps between adjacent instructions
-        3. Fills gaps with appropriate values
-        4. Validates the sequence
+        3. Fills gaps with the last value
         
         Args:
             stopsamp: The stop sample for compilation
-            
-        Raises:
-            ValueError: If instructions overlap
         """
+        # if there are no instructions, fill the entire sequence with the default value
         if not self.instructions:
-            # No instructions - fill entire range with default value using const
             default_instruction = Instruction(
                 func=partial(const, value=self.default_value),
                 start_samp=0,
@@ -99,29 +108,33 @@ class AOSequence:
             self.is_compiled = True
             return
             
-        # Sort instructions by start sample - O(m log m) where m is number of instructions
+        # 3.0 sort instructions by start sample
         self.instructions.sort(key=lambda x: x.start_samp)
         
-        # Check for overlaps between adjacent instructions - O(m)
+        # 3.1 check that adjacent samples do not overlap
         for i in range(len(self.instructions) - 1):
             current = self.instructions[i]
-            next_inst = self.instructions[i + 1]
+            next = self.instructions[i + 1]
             
-            if current.end_samp > next_inst.start_samp:
+            if current.end_samp > next.start_samp:
                 current_func = current.func.func.__name__
-                next_func = next_inst.func.func.__name__
-                raise ValueError(f"Instruction {current_func} (samples {current.start_samp}-{current.end_samp}) "
-                               f"overlaps with {next_func} (samples {next_inst.start_samp}-{next_inst.end_samp})")
+                next_func = next.func.func.__name__
+                
+                current_start_time = current.start_samp / self.samp_rate
+                current_end_time = current.end_samp / self.samp_rate
+                next_start_time = next.start_samp / self.samp_rate
+                next_end_time = next.end_samp / self.samp_rate
+                raise ValueError(f"Instruction {current_func} ({current_start_time}s-{current_end_time}s) "
+                               f"overlaps with {next_func} ({next_start_time}s-{next_end_time}s)")
         
-        # Fill gaps between instructions
+        # 3.2 fill gaps between instructions
         filled_instructions = []
         current_sample = 0
         last_value = self.default_value
         
         for instruction in self.instructions:
-            # Fill gap before this instruction if needed
+            # 3.2.1 check if there is a gap
             if current_sample < instruction.start_samp:
-                # Create const instruction directly to fill gap
                 gap_instruction = Instruction(
                     func=partial(const, value=last_value),
                     start_samp=current_sample,
@@ -129,23 +142,19 @@ class AOSequence:
                 )
                 filled_instructions.append(gap_instruction)
             
-            # Add the actual instruction
+            # 3.2.2 copy over current instruction
             filled_instructions.append(instruction)
             current_sample = instruction.end_samp
             
-            # Evaluate the instruction at its end time to get the last value
+            # 3.2.3. compute the end value of the current instruction
             duration = (instruction.end_samp - instruction.start_samp) / self.samp_rate
-            # Create a single-point time array at the end time (relative to instruction start)
-            end_time_array = np.array([duration])  # Time relative to instruction start
-            
-            # Call the original function directly with its parameters
-            original_func = instruction.func.func
+            end_time_array = np.array([duration]) 
+            func = instruction.func.func
             params = instruction.func.keywords
-            last_value = original_func(end_time_array, **params)[0]  # Get the single value
+            last_value = func(end_time_array, **params)[0] 
         
-        # Fill gap after last instruction to stopsamp if needed
+        # 3.3. check if there is a gap between last instruction and stop sample
         if current_sample < stopsamp:
-            # Create const instruction directly to fill final gap
             final_gap_instruction = Instruction(
                 func=partial(const, value=last_value),
                 start_samp=current_sample,
@@ -189,6 +198,18 @@ if __name__ == "__main__":
         params = instruction.func.keywords
         print(f"  {i}: {func_name} from {start_time}s to {end_time}s, params: {params}")
     
+    # Test overlap detection with improved error message
+    print("\nTesting overlap detection:")
+    seq_overlap = AOSequence()
+    seq_overlap.const(1.0, 2.0, value=5.0)  # 1s-3s
+    seq_overlap.sine(2.5, 1.0, freq=1, amp=2, phase=0)  # 2.5s-3.5s (overlaps!)
+    
+    try:
+        seq_overlap.compile(stopsamp=5e6)
+        print("✗ ERROR: Overlapping instructions should have been detected!")
+    except ValueError as e:
+        print(f"✓ Overlap correctly detected: {e}")
+    
     # Plot the compiled sequence
     import matplotlib.pyplot as plt
     
@@ -207,9 +228,9 @@ if __name__ == "__main__":
         t_instruction = np.linspace(0, (end_idx - start_idx) / seq.samp_rate, n_samples)
         
         # Evaluate the instruction function
-        original_func = instruction.func.func
+        func = instruction.func.func
         params = instruction.func.keywords
-        y_instruction = original_func(t_instruction, **params)
+        y_instruction = func(t_instruction, **params)
         
         # Fill the corresponding section of the full array
         y_full[start_idx:end_idx] = y_instruction
