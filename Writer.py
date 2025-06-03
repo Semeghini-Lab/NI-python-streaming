@@ -127,7 +127,7 @@ class Writer(Process):
         chunk_idx, buf_idx = self.READY_STRUCT.unpack(read_msg)
 
         if chunk_idx == -1:
-            print("Writer: Received stop message.")
+            print("Writer received stop message.")
             self.running = False
             return
 

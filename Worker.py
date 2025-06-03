@@ -70,8 +70,7 @@ class Worker(Process):
                     raise ValueError(f"Received incomplete assignment data in Worker({self.worker_id}).")
                 
                 chunk_idx, buf_idx, ch_start, ch_end = self.ASSIGN_STRUCT.unpack(assign_data)
-                print(f"Worker {self.worker_id} received assignment: chunk_idx={chunk_idx}, buf_idx={buf_idx}, ch_start={ch_start}, ch_end={ch_end}")
-
+                
                 if chunk_idx == -1:
                     print(f"Worker {self.worker_id} received stop message.")
                     break

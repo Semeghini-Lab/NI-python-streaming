@@ -115,7 +115,6 @@ class SequenceStreamer:
         if len(data) < self.WORKER_DONE_STRUCT.size:
             raise ValueError("Received incomplete worker done notification.")
         chunk_idx, buf_idx, worker_id, compute_time = self.WORKER_DONE_STRUCT.unpack(data)
-        print(f"Received done notification: chunk_idx={chunk_idx}, buf_idx={buf_idx}, worker_id={worker_id}, compute_time={compute_time}")
 
         if chunk_idx not in self.processed_chunks:
             raise ValueError(f"Received done notification for unknown chunk {chunk_idx}.")
@@ -154,7 +153,6 @@ class SequenceStreamer:
         
         # Add the slot to the available slot list
         self.available_slots.append(buf_idx)
-        print(f"Slot {buf_idx} freed by writer.")
 
         # If it was the last chunk, stop the manager loop
         if chunk_idx == self.num_chunks_to_stream - 1:
@@ -215,12 +213,15 @@ class SequenceStreamer:
                 callback(key.fileobj)
 
         # Send messages to stop the writer and workers
-        print("Sending stop messages to writer and workers...")
-        os.write(self.slot_free_fd, self.SLOT_FREE_STRUCT.pack(-1, -1))
-        print(f"Sent stop message to writer at {self.slot_free_fd}.")
         for fd in self.worker_assign_fds:
-            os.write(fd, self.WORKER_ASSIGN_STRUCT.pack(-1, -1, -1, -1))
-            print(f"Sent stop message to worker at {fd}.")
+            os.write(fd, self.WORKER_ASSIGN_STRUCT.pack(-1, -1, 0, 0))
+
+        os.write(self.chunk_ready_fd, self.CHUNK_READY_STRUCT.pack(-1, -1))
+
+        # Wait for the writer and workers to finish
+        self.writer.join(timeout=1.0)
+        for worker in self.workers:
+            worker.join(timeout=0.1)
 
         print("Sequence completed.")
 
