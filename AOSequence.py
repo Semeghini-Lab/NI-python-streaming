@@ -83,6 +83,7 @@ class AOSequence:
         self.max_value = max_value
         self.instructions = []
         self.is_compiled = False
+        self.channel_name = channel_name
         
         self.__class__._load_commands()
 

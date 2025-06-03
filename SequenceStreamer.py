@@ -165,7 +165,7 @@ class SequenceStreamer:
                 shm_name=self.shm.name,
                 sample_rate=self.sample_rate,
                 chunk_size=self.chunk_size,
-                outbuf_num_chunks=self.num_chunks_to_stream,
+                outbuf_num_chunks=self.pool_size,
                 pool_size=self.pool_size,
                 device_name=self.device_name,
                 ao_channels=self.ao_seqs,
@@ -187,7 +187,6 @@ class SequenceStreamer:
     def _assign_chunk(self, worker_id: int, chunk_idx: int, buf_idx: int, ch_start: int, ch_end: int):
         """Assign a chunk to a worker."""
         assign_data = self.WORKER_ASSIGN_STRUCT.pack(chunk_idx, buf_idx, ch_start, ch_end)
-        print(f"Assigning chunk {chunk_idx} to worker {worker_id}")
         self.worker_assign_sockets[worker_id].send(assign_data)
 
     def _process_worker_done_data(self, socket):
@@ -227,6 +226,11 @@ class SequenceStreamer:
         data = socket.recv()
         chunk_idx, buf_idx = self.SLOT_FREE_STRUCT.unpack(data)
         
+        if chunk_idx == -1:
+            print("Received error message from writer, stopping manager loop.")
+            self.running = False
+            return
+
         # Add the slot to the available slot list
         self.available_slots.append(buf_idx)
 
@@ -240,7 +244,6 @@ class SequenceStreamer:
         Notify the writer that a chunk is ready to be written.
         This method writes the chunk index and buffer index to the pipe.
         """
-        print(f"Sending ready signal for chunk {chunk_idx} in slot {buf_idx}")
         self.ready_socket.send(self.CHUNK_READY_STRUCT.pack(chunk_idx, buf_idx))
 
     def _manager_loop(self):
@@ -334,23 +337,26 @@ class SequenceStreamer:
         
 if __name__ == "__main__":
 
-    # Get the sample rate
-    sample_rate = 1e6
+    # Get the sample 
+    # rate
+    sample_rate = 0.3e6 # 200 kHz
 
     # Channel 0
     ch0 = AOSequence(channel_name="ao0", sample_rate=sample_rate)
+    ch0.linramp(0.0, 1.0, start=0, end=2)
     ch0.const(1.0, 1.0, value=5.0)
-    ch0.linramp(3.0, 1.0, start=0, end=10)
+    ch0.linramp(3.0, 1.0, start=0, end=6.8)
     ch0.sine(6.0, 0.75, freq=1, amp=2, phase=0)
 
     # Channel 1
-    ch1 = AOSequence(channel_name="ao2", sample_rate=sample_rate)
-    ch1.const(1.0, 1.0, value=5.0)
-    ch1.linramp(3.0, 1.0, start=0, end=10)
-    ch1.sine(6.0, 0.75, freq=1, amp=2, phase=0)
+    ch1 = AOSequence(channel_name="ao1", sample_rate=sample_rate)
+    ch1.const(0.0, 0.5, value=3.0)
+    ch1.linramp(0.5, 0.5, start=3.0, end=0)
+    ch1.sine(1.0, 5, freq=2, amp=2, phase=0)
+    ch1.linramp(6.0, 1.0, start=0, end=-2)
 
     # Aggregate
-    ao_seqs = [ch0, ch1]
+    ao_seqs = [ch0,ch1]#,ch1]
 
     # Set the chunk size and compile 
     chunk_size = 65536
