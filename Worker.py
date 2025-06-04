@@ -7,7 +7,7 @@ import numpy as np
 import time
 import bisect
 from multiprocessing import Process, shared_memory
-from AOSequence import AOSequence
+from Sequences import AOSequence, DOSequence
 import zmq
 
 class Worker(Process):
