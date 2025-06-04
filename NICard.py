@@ -1,6 +1,7 @@
 from typing import List, Optional
 from Sequences import AOSequence, DOSequence
 import numpy as np
+import os
 
 class NICard:
     """
@@ -51,6 +52,10 @@ class NICard:
 
         # Placeholder for the trigger source
         self.trigger_source = trigger_source
+
+        # Create shared memory segment names for this card
+        self.shm_name_ao = f"nistreamer_shared_memory_{os.getpid()}_{self.device_name}_ao"
+        self.shm_name_do = f"nistreamer_shared_memory_{os.getpid()}_{self.device_name}_do"
 
         # Validate the sequences
         self._validate_ao_sequences()
@@ -126,20 +131,20 @@ class NICard:
             raise ValueError(f"Chunk size for analog output must be an integer, got {chunk_size_ao}")
         if not isinstance(chunk_size_do, int):
             raise ValueError(f"Chunk size for digital output must be an integer, got {chunk_size_do}")
-        
-        # Calculate the max stop sample for analog output
-        max_stop_sample_ao = max([seq.stop_sample for seq in self.sequence_ao])
-        num_chunks_ao = np.ceil(max_stop_sample_ao / chunk_size_ao)
-
-        # Calculate the max stop sample for digital output
-        max_stop_sample_do = max([seq.stop_sample for seq in self.sequence_do])
-        num_chunks_do = np.ceil(max_stop_sample_do / chunk_size_do)
 
         # Compile the sequences
-        for seq in self.sequence_ao:
-            seq.compile(chunk_size_ao, num_chunks_ao)
-        for seq in self.sequence_do:
-            seq.compile(chunk_size_do, num_chunks_do)
+        if self.sequence_ao:
+             # Calculate the max stop sample for analog output
+            max_stop_sample_ao = max([max([ins.end_sample for ins in seq.instructions]) for seq in self.sequence_ao])
+            num_chunks_ao = int(np.ceil(max_stop_sample_ao / chunk_size_ao))
+            for seq in self.sequence_ao:
+                seq.compile(chunk_size_ao, num_chunks_ao)
+        if self.sequence_do:
+            # Calculate the max stop sample for digital output
+            max_stop_sample_do = max([max([ins.end_sample for ins in seq.instructions]) for seq in self.sequence_do])
+            num_chunks_do = int(np.ceil(max_stop_sample_do / chunk_size_do))
+            for seq in self.sequence_do:
+                seq.compile(chunk_size_do, num_chunks_do)
 
         # Save chunk sizes to mark that the sequences are compiled
         self.chunk_size_ao = chunk_size_ao
