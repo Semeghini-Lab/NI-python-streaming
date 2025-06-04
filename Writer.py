@@ -1,7 +1,7 @@
 # Writer.py
 # Created by: Marcin Kalinowski & Yi Zhu
 
-import os
+import sys
 import time
 import struct
 import numpy as np
@@ -9,7 +9,10 @@ from AOSequence import AOSequence
 from multiprocessing import Process, shared_memory
 import zmq
 
-TEST_MODE = False
+if sys.platform == "darwin":
+    TEST_MODE = True
+else:
+    TEST_MODE = False
 
 class UnderrunError(Exception):
     """Custom exception for underrun errors in the DAQ device."""
@@ -120,9 +123,11 @@ class Writer(Process):
             # Wait for the interrupt or end of stream
             self.running = True
             while self.running:
-                time.sleep(0.01)
-                #if TEST_MODE:
-                #    self._every_chunk_samples_callback(None, None, None, None)
+                if TEST_MODE:
+                   time.sleep(self.chunk_size / self.sample_rate)
+                   self._every_chunk_samples_callback(None, None, self.chunk_size, None)
+                else:
+                    time.sleep(0.01)
 
         except Exception as e:
             print(f"Writer: {e}.")
@@ -220,7 +225,7 @@ class Writer(Process):
         # Preload the buffer
         for i in range(self.outbuf_num_chunks):
             print(f"Writer: Preloading chunk {i + 1}/{self.outbuf_num_chunks}...")
-            self._every_chunk_samples_callback(-1, -1, -1, -1)
+            self._every_chunk_samples_callback(None, None, self.chunk_size, None)
 
         # Reset the timeout to the original value
         self.timeout = realtime_timeout
