@@ -64,7 +64,7 @@ class Sequence:
         # add method to this class
         setattr(cls, func_name, method)
 
-    def __init__(self, channel_id, sample_rate, default_value=0.0, channel_name=""):
+    def __init__(self, channel_id: str, sample_rate: int, default_value: float = 0.0, channel_name: str = ""):
         """
         Initialize a sequence.
         
@@ -74,32 +74,46 @@ class Sequence:
             default_value: Default output value
             channel_name (str, optional): Name of the channel for operational use (e.g., "ao0", "do1")
         """
-        self.sample_rate = sample_rate
-        self.sample_rate = int(sample_rate)
         self.default_value = default_value
         self.instructions = []
         self.is_compiled = False
         self.channel_id = channel_id
         self.channel_name = channel_name
+
+        # Make sure the sample rate is an integer
+        if not isinstance(sample_rate, int):
+            raise ValueError(f"Sample rate must be an integer, got {sample_rate}")
+        
+        self.sample_rate = sample_rate
         
         self.__class__._load_commands()
 
-    def compile(self, stopsamp):
-        """Compile the sequence with the given stop sample.
+    def compile(self, chunk_size, num_chunks):
+        """
+        Compile the sequence with the given sample rate, chunk size, and stop sample.
         
+        Compilation algorithm:
         1. Sorts instructions by start sample
         2. Checks for overlaps between adjacent instructions
-        3. Fills gaps with the last value
+        3. Fills gaps with the previous value
         
         Args:
-            stopsamp: The stop sample for compilation
+            chunk_size: The chunk size for compilation
+            num_chunks: The number of chunks for compilation (need to ensure same number of waveforms for all channels)
         """
+        # Make sure the arguments are integers
+        if not isinstance(chunk_size, int):
+            raise ValueError(f"Chunk size must be an integer, got {chunk_size}")
+        if not isinstance(num_chunks, int):
+            raise ValueError(f"Number of chunks must be an integer, got {num_chunks}")
+
+        
         # if there are no instructions, fill the entire sequence with the default value
         if not self.instructions:
             default_instruction = Instruction(
                 func=partial(const, value=self.default_value),
                 start_sample=0,
-                end_sample=int(stopsamp)
+                end_sample=self.sample_rate * chunk_size * num_chunks
             )
             self.instructions = [default_instruction]
             self.is_compiled = True
@@ -107,6 +121,9 @@ class Sequence:
             
         # sort instructions by start sample
         self.instructions.sort(key=lambda x: x.start_sample)
+
+        # Calculate the final sample index
+        stop_sample = self.sample_rate * chunk_size * num_chunks
         
         # check that adjacent samples do not overlap
         for i in range(len(self.instructions) - 1):
@@ -151,11 +168,11 @@ class Sequence:
             last_value = func(end_time_array, **params)[0] 
         
         # check if there is a gap between last instruction and stop sample
-        if current_sample < stopsamp:
+        if current_sample < stop_sample:
             final_gap_instruction = Instruction(
                 func=partial(const, value=last_value),
                 start_sample=current_sample,
-                end_sample=int(stopsamp)
+                end_sample=stop_sample
             )
             filled_instructions.append(final_gap_instruction)
         
@@ -174,17 +191,17 @@ class AOSequence(Sequence):
     '''
     _command_category = 'analog_output'
 
-    def __init__(self, channel_id, sample_rate, default_value=0.0, min_value=-10.0, max_value=10.0, channel_name=""):
+    def __init__(self, channel_id: str, sample_rate: int, default_value: float = 0.0, min_value: float = -10.0, max_value: float = 10.0, channel_name: str = ""):
         """
         Initialize an analog output sequence.
         
         Args:
-            channel_id (str): Hardware identifier for the channel (e.g., "PXI1Slot3/ao0")
+            channel_id (str): Hardware identifier for the channel (e.g., "ao0")
             sample_rate (int): Sample rate in Hz
             default_value (float): Default output value
             min_value (float): Minimum allowed output value
             max_value (float): Maximum allowed output value
-            channel_name (str, optional): Name of the channel for operational use (e.g., "ao0")
+            channel_name (str, optional): Name of the channel for operational use (e.g., "AOD Power")
         """
         super().__init__(channel_id, sample_rate, default_value, channel_name)
         self.min_value = min_value
@@ -197,15 +214,15 @@ class DOSequence(Sequence):
     '''
     _command_category = 'digital_output'
 
-    def __init__(self, channel_id, sample_rate, default_value=0, channel_name=""):
+    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = ""):
         """
         Initialize a digital output sequence.
         
         Args:
-            channel_id (str): Hardware identifier for the channel (e.g., "PXI1Slot3/do0")
+            channel_id (str): Hardware identifier for the channel (e.g., "do0")
             sample_rate (int): Sample rate in Hz
             default_value (int): Default output value (0 or 1)
-            channel_name (str, optional): Name of the channel for operational use (e.g., "do0")
+            channel_name (str, optional): Name of the channel for operational use (e.g., "AOD TTL")
         """
         super().__init__(channel_id, sample_rate, default_value, channel_name)
 
