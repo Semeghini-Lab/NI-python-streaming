@@ -68,7 +68,7 @@ class NICard:
             # Ensure all sequences are of the same type
             mode_agreement = [isinstance(seq, DOSequence if self.is_digital else AOSequence) for seq in self.sequences]
             if not np.all(mode_agreement):
-                raise ValueError(f"Card is {'digital' if self.is_digital else 'analog'} but some sequences are not ({[self.sequences[i] for i in np.where(~np.array(mode_agreement))[0]]})")
+                raise ValueError(f"Card {self.device_name} is {'digital' if self.is_digital else 'analog'} but some sequences are not ({[self.sequences[i] for i in np.where(~np.array(mode_agreement))[0]]})")
 
     def add_sequence(self, sequence: Sequence):
         """Add an analog output sequence to the card."""
@@ -82,17 +82,18 @@ class NICard:
         
         # Make sure the sequence is of the same type as the card
         if isinstance(sequence, DOSequence) != self.is_digital:
-            raise ValueError(f"Sequence is {'digital' if isinstance(sequence, DOSequence) else 'analog'} but card is {'digital' if self.is_digital else 'analog'}")
+            raise ValueError(f"Sequence {sequence} is {'digital' if isinstance(sequence, DOSequence) else 'analog'} but card {self.device_name} is {'digital' if self.is_digital else 'analog'}")
         
         self.sequences.append(sequence)
         self.channel_ids.add(sequence.channel_id)
 
-    def compile(self, chunk_size: int):
+    def compile(self, chunk_size: int, external_stop_time: float = None):
         """
         Compile all sequences with the given chunk size.
 
         Args:
             chunk_size (int): The chunk size for all sequences
+            stop_time (float, optional): The stop time to extend the sequences to. If not provided, align only to the current card sequences.
         """
         # Make sure the chunk sizes are integers
         if not isinstance(chunk_size, int):
@@ -102,6 +103,11 @@ class NICard:
         if self.sequences:
              # Calculate the max stop sample for analog output
             max_stop_sample = max([max([ins.end_sample for ins in seq.instructions]) for seq in self.sequences])
+            max_stop_time = max_stop_sample / self.sample_rate
+            if external_stop_time:
+                if external_stop_time < max_stop_time:
+                    raise ValueError(f"External stop time {external_stop_time} is less than the current card stop time {max_stop_time}")
+                max_stop_sample = int(external_stop_time * self.sample_rate)
             num_chunks = int(np.ceil(max_stop_sample / chunk_size))
             self.num_chunks = num_chunks
             for seq in self.sequences:

@@ -25,8 +25,6 @@ class Sequence:
                 # Extract the function parameters
                 params = list(filter(lambda x: x != 't', inspect.signature(obj).parameters.keys()))
 
-                print(name, params)
-
                 # Create a method for the command
                 cls._create_class_method(name, obj, params)
         cls._commands_loaded = True
@@ -177,12 +175,25 @@ class Sequence:
             filled_instructions.append(final_gap_instruction)
         
         self.instructions = filled_instructions
+        self.final_sample = stop_sample
         self.is_compiled = True
+
+    def __str__(self):
+        return f"{self.channel_name}({self.channel_id})" if self.channel_name else f"{self.channel_id}"
+    
+    def __repr__(self):
+        return str(self)
 
     def clear(self):
         """Clear all instructions and reset compilation status."""
         self.instructions = []
         self.is_compiled = False
+
+    def get_num_samples(self):
+        if self.is_compiled:
+            return self.final_sample
+        else:
+            return None
 
 
 class AOSequence(Sequence):
