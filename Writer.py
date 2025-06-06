@@ -175,7 +175,7 @@ class Writer(Process):
             chunk_idx, buf_idx, card_idx_recv = self.READY_STRUCT.unpack(data)
             #print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
         else:
-            raise UnderrunError(f"Timed out after {self.timeout:.2f}ms waiting for ready signal from the card {card_idx} socket")
+            raise UnderrunError(f"Timed out after {self.timeout:.2f}ms waiting for ready signal from the card {self.card_indices[card_idx]} socket")
         
         if chunk_idx == -1:
             print(f"Writer {self.writer_id} received stop message.")
