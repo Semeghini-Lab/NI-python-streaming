@@ -128,15 +128,3 @@ class NICard:
             raise ValueError(f"Sequences are not compiled. Run NICard.compile() first.")
         
         return self.sequences
-    
-    def get_trigger_source(self):
-        if self.is_primary:
-            return self.trigger_source
-        else:
-            return None
-    
-    def get_clock_source(self):
-        if self.is_primary:
-            return self.clock_source
-        else:
-            return None
