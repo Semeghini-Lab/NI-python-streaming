@@ -121,7 +121,7 @@ class Sequence:
         self.instructions.sort(key=lambda x: x.start_sample)
 
         # Calculate the final sample index
-        stop_sample = self.sample_rate * chunk_size * num_chunks
+        stop_sample = chunk_size * num_chunks
         
         # check that adjacent samples do not overlap
         for i in range(len(self.instructions) - 1):

@@ -277,14 +277,14 @@ class SequenceStreamer:
         """Assign a chunk to a worker."""
         assign_data = self.WORKER_ASSIGN_STRUCT.pack(chunk_idx, buf_idx, card_idx, ch_start, ch_end)
         self.worker_assign_sockets[worker_id].send(assign_data)
-        print(f"Assigned chunk {chunk_idx} to worker {worker_id} at card {card_idx} with channel range {ch_start}-{ch_end}.")
+        #print(f"[ASSIGN CALC] card={card_idx} chunk={chunk_idx} slot={buf_idx} worker_id={worker_id} channels={ch_start}-{ch_end}.")
 
     def _process_worker_done_data(self, socket):
         """Process worker done data."""
         data = socket.recv()
         chunk_idx, buf_idx, card_idx, worker_id, compute_time = self.WORKER_DONE_STRUCT.unpack(data)
 
-        print(f"Received done notification for chunk {chunk_idx} from worker {worker_id} at card {card_idx}.")
+        #print(f"[FINISHED CALC] card={card_idx} chunk={chunk_idx} slot={buf_idx} worker_id={worker_id}.")
 
         if chunk_idx not in self.chunks_being_processed[card_idx]:
             raise ValueError(f"Received done notification for an unexpected chunk {chunk_idx} at card {card_idx}.")
@@ -300,7 +300,7 @@ class SequenceStreamer:
 
         # All channel groups for this chunk have been processed
         if self.chunks_being_processed[card_idx][chunk_idx][1] == 0:
-            print(f"All channel groups for chunk {chunk_idx} at card {card_idx} have been processed.")
+            #print(f"All channel groups for chunk {chunk_idx} at card {card_idx} have been processed.")
             # Remove the chunk from processed chunks
             del self.chunks_being_processed[card_idx][chunk_idx]
 
@@ -308,7 +308,7 @@ class SequenceStreamer:
             if self.next_chunk_to_write[card_idx] == chunk_idx:
                 self._assign_slot_write(chunk_idx, buf_idx, card_idx)
             else:
-                print(f"Pushing chunk {chunk_idx} to completed queue at card {card_idx}.")
+                # Otherwise, queue it for writing
                 heapq.heappush(self.chunks_completed[card_idx], (chunk_idx, buf_idx, card_idx))
 
     def _process_slot_free(self, socket):
@@ -324,7 +324,7 @@ class SequenceStreamer:
             self.running = False
             return
         
-        print(f"Received slot free notification for chunk {chunk_idx} in slot {buf_idx} at card {card_idx}.")
+        #print(f"[DONE WRITE] card={card_idx} chunk={chunk_idx} slot={buf_idx}.")
 
         # Add the slot to the available slot list
         self.available_slots[card_idx].append(buf_idx)
@@ -342,7 +342,7 @@ class SequenceStreamer:
         Notify the writer that a chunk is ready to be written.
         This method writes the chunk index and buffer index to the pipe.
         """
-        print(f"Assigning write on slot {buf_idx} for chunk {chunk_idx} at card {card_idx}.")
+        #print(f"[WRITE] card={card_idx} chunk={chunk_idx} slot={buf_idx}.")
         self.writer_ready_sockets[card_idx].send(self.WRITER_ASSIGN_STRUCT.pack(chunk_idx, buf_idx, card_idx))
 
         if chunk_idx != self.next_chunk_to_write[card_idx]:
@@ -357,34 +357,26 @@ class SequenceStreamer:
         self.running = True
         self.num_chunks_written = 0
         while self.running:
-            #time.sleep(0.1)
             # While there are free workers and available slots, assign chunks to be computed until done
             temp_chunk_queue = []
             # Ensure that we loop at most self.available_workers times
             loop_count = 0
+            #print(f"[{len(self.chunk_queue)}/{self.total_num_chunks_to_stream}]: av_workers={len(self.available_workers)} av_slots={[len(slots) for slots in self.available_slots]} chunk_queue={self.chunk_queue}")
             while self.chunk_queue and len(self.available_workers) and loop_count < self.num_workers:
                 # Get the next highest-priority chunk to stream
                 (chunk_idx, channel_group_idx, card_idx) = self.chunk_queue.pop()
-
-                # Only go some amount into the future
-                # if chunk_idx > self.next_chunk_to_write[card_idx]+2:
-                #     #print(f"Skipping chunk {chunk_idx} at card {card_idx} because it is too far into the future.")
-                #     temp_chunk_queue.append((chunk_idx, channel_group_idx, card_idx))
-                #     loop_count += 1
-                #     continue
 
                 # Check if the chunk is already being assigned to a buffer slot
                 if chunk_idx in self.chunks_being_processed[card_idx]:
                     buf_idx = self.chunks_being_processed[card_idx][chunk_idx][0]
                 else:
-                    # If the chunk is not processed, get the next available slot
-                    if len(self.available_slots[card_idx]):
+                    # If the chunk is not processed, get the next available slot (1 slot always reserved for the next-in-order chunk)
+                    if (len(self.available_slots[card_idx]) > 1) or (len(self.available_slots[card_idx]) and chunk_idx == self.next_chunk_to_write[card_idx]):
                         buf_idx = self.available_slots[card_idx].pop()
                         self.chunks_being_processed[card_idx][chunk_idx] = [buf_idx, self.num_channel_ranges[card_idx]]
                     else:
-                        # Put the chunk back in the temporary queue
+                        # Put chunk into the temporary queue
                         temp_chunk_queue.append((chunk_idx, channel_group_idx, card_idx))
-                        #print(f"No available slots for chunk {chunk_idx} at card {card_idx}, putting back in queue.")
                         loop_count += 1
                         continue
 
@@ -401,14 +393,12 @@ class SequenceStreamer:
                 loop_count += 1
 
             # Write all in-order chunks from the completed queue
-            #print(self.chunks_completed)
             for card_idx in range(len(self.cards)):
                 while self.chunks_completed[card_idx] and self.chunks_completed[card_idx][0][0] == self.next_chunk_to_write[card_idx]:
                     (chunk_idx, buf_idx, card_idx) = heapq.heappop(self.chunks_completed[card_idx])
                     self._assign_slot_write(chunk_idx, buf_idx, card_idx)
             
             # Empty the temporary queue
-            #print(f"Remaining chunks in queue: {len(self.chunk_queue)}")
             self.chunk_queue.extend(reversed(temp_chunk_queue))
             
             # Process events
@@ -422,12 +412,14 @@ class SequenceStreamer:
         for socket in self.worker_assign_sockets:
             socket.send(self.WORKER_ASSIGN_STRUCT.pack(-1, -1, 0, 0, 0))
 
+        # Wait for the full buffer to play (2x for safety)
+        time.sleep(2 * self.pool_size * max([card.chunk_size/card.sample_rate for card in self.cards])) # in seconds
+
         # Wait for the writer and workers to finish
         for writer in self.writers:
-            writer.join(timeout=1.0) # in seconds
+            writer.join(timeout=10.0) # in seconds
         for worker in self.workers:
-            worker.join(timeout=1.0) # in seconds
-
+            worker.join(timeout=10.0) # in seconds
         print("Sequence completed.")
 
     def cleanup(self):
@@ -476,10 +468,10 @@ if __name__ == "__main__":
     ch0.linramp(0.0, 1.0, start=0, end=2)
     ch0.const(1.0, 1.0, value=5.0)
     ch0.linramp(3.0, 1.0, start=0, end=6.8)
-    ch0.sine(6.0, 0.75, freq=1, amp=2, phase=0)
+    ch0.sine(6.0, 0.5, freq=1, amp=2, phase=0)
 
     # Channel 1
-    ch1 = AOSequence(channel_id="ao1", sample_rate=sample_rate)
+    ch1 = AOSequence(channel_id="ao0", sample_rate=sample_rate)
     ch1.const(0.0, 0.5, value=3.0)
     ch1.linramp(0.5, 0.5, start=3.0, end=0)
     ch1.sine(1.0, 5, freq=2, amp=2, phase=0)
@@ -504,15 +496,16 @@ if __name__ == "__main__":
     card1 = NICard(
         device_name="PXI1Slot3", 
         sample_rate=sample_rate,
-        sequences=[ch0,ch1],
-        trigger_source=None,
+        sequences=[ch0],
+        is_primary = True,
+        trigger_source="PXI_Trig0",
     )
 
     card2 = NICard(
         device_name="PXI1Slot4", 
         sample_rate=sample_rate,
-        sequences=[ch3],
-        trigger_source=None,
+        sequences=[ch1],
+        trigger_source=card1.trigger_source,
     )
 
     # Aggregate

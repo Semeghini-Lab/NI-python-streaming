@@ -65,8 +65,6 @@ class Worker(Process):
             # Connect to ports
             self.assign_socket.connect(f"tcp://127.0.0.1:{self.assign_port}")
             self.done_socket.connect(f"tcp://127.0.0.1:{self.done_port}")
-            
-            print(f"Worker {self.worker_id}: Connected to ports assign={self.assign_port}, done={self.done_port}")
 
             # Create shared memory objects and buffers
             self.shms = []
@@ -80,8 +78,6 @@ class Worker(Process):
                     buffer=shm.buf
                 )
                 self.buffers.append(buffer)
-
-            print(f"Worker {self.worker_id}: Buffers created for {len(self.buffers)} cards.")
 
             # Main worker loop
             while True:

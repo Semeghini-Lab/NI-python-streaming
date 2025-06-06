@@ -4,6 +4,7 @@
 import sys
 import time
 import struct
+import functools
 import numpy as np
 from NICard import NICard
 from multiprocessing import Process, shared_memory
@@ -96,8 +97,6 @@ class Writer(Process):
                 ready_socket.connect(f"tcp://127.0.0.1:{ready_port}")
             for report_socket, report_port in zip(self.report_sockets, self.report_ports):
                 report_socket.connect(f"tcp://127.0.0.1:{report_port}")
-            
-            print(f"Writer {self.writer_id}: Connected to ports ready={self.ready_ports}, report={self.report_ports}")
 
             # Attach to shared memory segments create buffers
             self.shms = []
@@ -111,8 +110,6 @@ class Writer(Process):
                     buffer=shm.buf
                 )
                 self.buffers.append(buffer)
-
-            print(f"Writer {self.writer_id}: Buffers created for {len(self.buffers)} cards.")
 
             # Initialize the chunk index counter for continuity tracking (sanity check)
             self.last_written_chunk_indices = [-1] * len(self.cards)
@@ -132,13 +129,13 @@ class Writer(Process):
             if not TEST_MODE:
                 for card_idx, card in enumerate(self.cards):
                     self.tasks[card_idx].register_every_n_samples_transferred_from_buffer_event(
-                        samples_per_channel=card.chunk_size,
-                        callback_method=self._every_chunk_samples_callback,
-                        callback_data=card_idx,
+                        sample_interval=card.chunk_size,
+                        callback_method=functools.partial(self._every_chunk_samples_callback, card_idx=card_idx),
                     )
 
                 # Start the tasks in order that ensures trigger is armed
                 for card_idx in reversed(range(len(self.cards))):
+                    print(f"Worker {self.writer_id}: starting card={self.card_indices[card_idx]}")
                     self.tasks[card_idx].start()
 
             # Wait for the interrupt or end of stream
@@ -147,7 +144,7 @@ class Writer(Process):
                 if TEST_MODE:
                     time.sleep(self.longest_realtime_chunk_time)
                     for card_idx, card in enumerate(self.cards):
-                        self._every_chunk_samples_callback(None, None, card.chunk_size, card_idx)
+                        self._every_chunk_samples_callback(None, None, card.chunk_size, None, card_idx=card_idx)
                 else:
                     time.sleep(0.01)
 
@@ -160,14 +157,13 @@ class Writer(Process):
         finally:
             self.cleanup()
 
-    def _every_chunk_samples_callback(self, task, event_type, n_samples, callback_data):
+    def _every_chunk_samples_callback(self, task, event_type, n_samples, callback_data, card_idx):
         """
         Callback function to write data to the DAQ device.
         This is called every time a chunk of samples is transferred from the buffer.
+
+        card_idx: index of the calling card within the local writer scope
         """
-        
-        # Get the information from the callback data
-        card_idx = callback_data
 
         if not self.running or n_samples is None:
             return 0
@@ -177,7 +173,7 @@ class Writer(Process):
             # If we got a message from the manager, read it
             data = self.ready_sockets[card_idx].recv()
             chunk_idx, buf_idx, card_idx_recv = self.READY_STRUCT.unpack(data)
-            print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
+            #print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
         else:
             raise UnderrunError(f"Timed out after {self.timeout:.2f}ms waiting for ready signal from the card {card_idx} socket")
         
@@ -222,39 +218,34 @@ class Writer(Process):
         if card.is_digital:
             for do in card.sequences:
                 task.do_channels.add_do_chan(
-                    f"{card.device_name}/{do.channel_name}"
+                    f"{card.device_name}/{do.channel_id}"
                 )
         else:
             for ao in card.sequences:
+                print(f"Writer {self.writer_id}: connecting to {card.device_name}/{ao.channel_id}")
                 task.ao_channels.add_ao_voltage_chan(
-                    f"{card.device_name}/{ao.channel_name}",
+                    f"{card.device_name}/{ao.channel_id}",
                 min_val=ao.min_value,
                 max_val=ao.max_value
             )
 
-
-
         # Calculate the total output buffer size
         outbuf_size = card.chunk_size * self.outbuf_num_chunks
 
-        # Configure the sample clock for analog output
+        # Configure the sample clock for the card
         task.timing.cfg_samp_clk_timing(
             rate=card.sample_rate,
             sample_mode=self.ni.constants.AcquisitionType.CONTINUOUS,
             samps_per_chan=outbuf_size
         )
 
-        # Configure the sample clock for digital output
-        task.timing.cfg_samp_clk_timing(
-            rate=card.sample_rate,
-            sample_mode=self.ni.constants.AcquisitionType.CONTINUOUS,
-            samps_per_chan=outbuf_size
-        )
-
-        # Configure the trigger for the analog output if it is specified
+        # Configure the trigger for the card if it is specified
         if card.trigger_source:
             if card.is_primary:
-                task.exported_signals.start_trigger_output_terminal = f"{card.device_name}/PFI0"
+                task.export_signals.export_signal(
+                    signal_id=self.ni.constants.Signal.START_TRIGGER, 
+                    output_terminal=card.trigger_source
+                )
             else:
                 task.triggers.start_trigger.cfg_dig_edge_start_trig(
                     card.trigger_source,
@@ -262,13 +253,15 @@ class Writer(Process):
                 )
         
         # Configure the clock source for the card
-        if card.clock_source:
-            if card.is_primary:
-                task.exported_signals.ref_clk_output_terminal = f"{card.device_name}/PFI0"
-            else:
-                task.timing.cfg_dig_edge_clk_src(
-                    f"{card.device_name}/{card.clock_source}"
-                )
+        # if card.clock_source:
+        #     if card.is_primary:
+        #         task.export_signals.ref_clk_output_terminal = card.clock_source
+        #     else:
+        #         task.timing.cfg_dig_edge_clk_src(
+        #             card.clock_source
+        #         )
+
+        print(f"Writer {self.writer_id}: card={self.card_indices[card_idx]} device={card.device_name}.")
 
         # Set regeneration mode
         task.out_stream.regen_mode = self.ni.constants.RegenerationMode.DONT_ALLOW_REGENERATION
@@ -298,8 +291,7 @@ class Writer(Process):
 
         # Preload the buffer
         for i in range(self.outbuf_num_chunks):
-            print(f"Writer {self.writer_id}: Preloading chunk {i + 1}/{self.outbuf_num_chunks} to card {card_idx}.")
-            self._every_chunk_samples_callback(None, None, self.cards[card_idx].chunk_size, card_idx)
+            self._every_chunk_samples_callback(None, None, self.cards[card_idx].chunk_size, None, card_idx=card_idx)
 
         # Reset the timeout to the original value
         self.timeout = realtime_timeout
