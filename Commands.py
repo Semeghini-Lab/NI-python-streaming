@@ -17,7 +17,7 @@ def const(t, value):
 
 @analog_output
 def sine(t, freq, amp, phase):
-    return amp * np.sin(2 * np.pi / freq * t + phase)
+    return amp * np.sin(2 * np.pi * freq * t + phase)
 
 @analog_output
 def linramp(t, start, end):
