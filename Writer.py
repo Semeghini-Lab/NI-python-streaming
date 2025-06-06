@@ -222,7 +222,6 @@ class Writer(Process):
                 )
         else:
             for ao in card.sequences:
-                print(f"Writer {self.writer_id}: connecting to {card.device_name}/{ao.channel_id}")
                 task.ao_channels.add_ao_voltage_chan(
                     f"{card.device_name}/{ao.channel_id}",
                 min_val=ao.min_value,
@@ -253,15 +252,17 @@ class Writer(Process):
                 )
         
         # Configure the clock source for the card
-        # if card.clock_source:
-        #     if card.is_primary:
-        #         task.export_signals.ref_clk_output_terminal = card.clock_source
-        #     else:
-        #         task.timing.cfg_dig_edge_clk_src(
-        #             card.clock_source
-        #         )
+        if card.clock_source:
+            if card.is_primary:
+                task.export_signals.export_signal(
+                    signal_id=self.ni.constants.Signal.TEN_MHZ_REF_CLOCK,
+                    output_terminal=card.clock_source
+                )
+            else:
+                task.timing.ref_clk_rate = 10e6
+                task.timing.ref_clk_src = card.clock_source
 
-        print(f"Writer {self.writer_id}: card={self.card_indices[card_idx]} device={card.device_name}.")
+        print(f"Writer {self.writer_id}: card={self.card_indices[card_idx]} {'(primary)' if card.is_primary else ''} device={card.device_name} trigger={card.trigger_source} clock={card.clock_source}.")
 
         # Set regeneration mode
         task.out_stream.regen_mode = self.ni.constants.RegenerationMode.DONT_ALLOW_REGENERATION
