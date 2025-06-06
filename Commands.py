@@ -26,13 +26,13 @@ def linramp(t, start, end):
 # ====== DIGITAL OUTPUT COMMANDS ======
 
 @digital_output
-def on(t):
-    """Digital output on."""
+def high(t):
+    """Digital output high."""
     return np.ones_like(t)
 
 @digital_output
-def off(t):
-    """Digital output off."""
+def low(t):
+    """Digital output low."""
     return np.zeros_like(t)
 
 @digital_output
