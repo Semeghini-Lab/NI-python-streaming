@@ -461,21 +461,22 @@ if __name__ == "__main__":
 
     # Get the sample 
     # rate
-    sample_rate = 300_000 # 300 kHz
+    sample_rate = 1_000_000 # Hz
 
     # Channel 0
     ch0 = AOSequence(channel_id="ao0", sample_rate=sample_rate)
-    ch0.linramp(0.0, 1.0, start=0, end=2)
-    ch0.const(1.0, 1.0, value=5.0)
-    ch0.linramp(3.0, 1.0, start=0, end=6.8)
-    ch0.sine(6.0, 0.5, freq=1, amp=2, phase=0)
+    #ch0.linramp(0.0, 1.0, start=0, end=2)
+    #ch0.const(1.0, 1.0, value=5.0)
+    #ch0.linramp(3.0, 1.0, start=0, end=6.8)
+    ch0.sine(0.0, 10*60.0, freq=300_000, amp=2, phase=0)
 
     # Channel 1
     ch1 = AOSequence(channel_id="ao0", sample_rate=sample_rate)
-    ch1.const(0.0, 0.5, value=3.0)
-    ch1.linramp(0.5, 0.5, start=3.0, end=0)
-    ch1.sine(1.0, 5, freq=2, amp=2, phase=0)
-    ch1.linramp(6.0, 1.0, start=0, end=-2)
+    # ch1.const(0.0, 0.5, value=3.0)
+    # ch1.linramp(0.5, 0.5, start=3.0, end=0)
+    # ch1.sine(1.0, 5, freq=2, amp=2, phase=0)
+    # ch1.linramp(6.0, 1.0, start=0, end=-2)
+    ch1.sine(0.0, 10*60.0, freq=300_000, amp=2, phase=0)
 
     # Channel 1 on a different card
     ch2 = AOSequence(channel_id="ao1", sample_rate=sample_rate)
@@ -486,8 +487,8 @@ if __name__ == "__main__":
 
     # Channel 1 digital 
     ch3 = DOSequence(channel_id="do0", sample_rate=sample_rate)
-    ch3.on(0, 0.5)
-    ch3.off(0.5, 0.5)
+    ch3.high(0, 0.5)
+    ch3.low(0.5, 0.5)
 
     # Set the chunk size and compile 
     chunk_size = 65536
@@ -499,6 +500,7 @@ if __name__ == "__main__":
         sequences=[ch0],
         is_primary = True,
         trigger_source="PXI_Trig0",
+        clock_source="PXI_Trig7"
     )
 
     card2 = NICard(
@@ -506,6 +508,7 @@ if __name__ == "__main__":
         sample_rate=sample_rate,
         sequences=[ch1],
         trigger_source=card1.trigger_source,
+        clock_source=None#card1.clock_source
     )
 
     # Aggregate
@@ -513,7 +516,7 @@ if __name__ == "__main__":
 
     # Compile the cards
     for card in cards:
-        card.compile(chunk_size=chunk_size, external_stop_time=8.0)
+        card.compile(chunk_size=chunk_size, external_stop_time=10*60.0)
 
     # Example usage with context manager
     with SequenceStreamer(
