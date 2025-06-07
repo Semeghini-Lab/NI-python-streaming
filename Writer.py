@@ -259,8 +259,12 @@ class Writer(Process):
                     output_terminal=card.clock_source
                 )
             else:
-                task.timing.ref_clk_rate = 10e6
-                task.timing.ref_clk_src = card.clock_source
+                if card.is_digital:
+                    task.timing.samp_clk_rate = 10e6
+                    task.timing.samp_clk_src = card.clock_source
+                else:
+                    task.timing.ref_clk_rate = 10e6
+                    task.timing.ref_clk_src = card.clock_source
 
         print(f"Writer {self.writer_id}: card={self.card_indices[card_idx]} {'(primary)' if card.is_primary else ''} device={card.device_name} trigger={card.trigger_source} clock={card.clock_source}.")
 

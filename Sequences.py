@@ -237,6 +237,9 @@ class DOSequence(Sequence):
         """
         super().__init__(channel_id, sample_rate, default_value, channel_name)
 
+        if sample_rate != int(10e6):
+            raise ValueError("Digital channels need a 10 MHz sample rate")
+
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
