@@ -521,7 +521,7 @@ if __name__ == "__main__":
     )
 
     # Aggregate
-    cards = [card1, card3]
+    cards = [card1]
 
     # Compile the cards
     for card in cards:
