@@ -9,7 +9,7 @@ from nidaqmx.constants import AcquisitionType, RegenerationMode
 from nidaqmx.stream_writers import AnalogSingleChannelWriter, DigitalSingleChannelWriter
 from nidaqmx.system import System
 
-
+from nidaqmx.constants import LineGrouping
 
 def list_devices():
     """
@@ -388,6 +388,7 @@ def stream_infinite_do_polling():
     chunk_size = 65536
     buf_out_size = 2 * chunk_size  # buffer size
     sample_counter = 0
+    
 
     task = ni.Task()
 
@@ -404,7 +405,7 @@ def stream_infinite_do_polling():
 
         # Add digital output channels
         for i, channel_name in enumerate(channel_names):
-            task.do_channels.add_do_chan(channel_name)
+            task.do_channels.add_do_chan(channel_name, line_grouping=LineGrouping.CHAN_PER_LINE)
             print(f"DEBUG: Added digital output channel {i}: {channel_name}")
         
         print(f"Total channels configured: {len(channel_names)}")
