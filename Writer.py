@@ -48,8 +48,8 @@ class Writer(Process):
         self.card_indices = card_indices
         self.outbuf_num_chunks = outbuf_num_chunks
         self.pool_size = pool_size
-        # Fix timeout logic: use a minimum of 1ms for polling mode, but convert to milliseconds
-        self.timeout = max(1, int(timeout * 1000))  # Always at least 1ms
+        # Fix timeout logic: use a minimum of 10ms for polling mode, but convert to milliseconds  
+        self.timeout = max(10, int(timeout * 1000))  # Always at least 10ms
 
         # Store ports
         self.ready_ports = ready_ports
@@ -150,26 +150,42 @@ class Writer(Process):
         Main polling loop that checks buffer space availability and writes data when ready.
         This replaces the callback-based approach.
         """
-        # Sleep interval for polling (in seconds)
-        poll_interval = min(0.001, self.longest_realtime_chunk_time / 10)  # 10% of chunk time or 1ms, whichever is smaller
+        # Sleep interval for polling (in seconds) - make it smaller for better responsiveness
+        poll_interval = min(0.0001, self.longest_realtime_chunk_time / 100)  # 1% of chunk time or 0.1ms, whichever is smaller
         
         while self.running:
             try:
+                wrote_any_data = False
                 for card_idx in range(len(self.cards)):
                     # Check if there's enough space in the buffer for a chunk
                     if not TEST_MODE:
                         card = self.cards[card_idx]
                         space_available = self.tasks[card_idx].out_stream.space_avail
                         
-                        # Only write if there's enough space for at least one chunk
-                        if space_available >= card.chunk_size:
-                            self._write_chunk_to_device(card_idx)
+                        # Keep filling the buffer while there's space - be more aggressive
+                        while space_available >= card.chunk_size and self.running:
+                            if self._write_chunk_to_device(card_idx):
+                                wrote_any_data = True
+                                # Check space again after writing
+                                new_space = self.tasks[card_idx].out_stream.space_avail
+                                if new_space != space_available - card.chunk_size:
+                                    print(f"Writer {self.writer_id}: Unexpected buffer space change. Was {space_available}, expected {space_available - card.chunk_size}, now {new_space}")
+                                space_available = new_space
+                            else:
+                                # No more data available from manager, break inner loop
+                                break
+                        
+                        # Debug: warn if buffer space is getting low
+                        if space_available < card.chunk_size * 2:  # Less than 2 chunks of space
+                            print(f"Writer {self.writer_id}: Warning - Low buffer space: {space_available} samples (need {card.chunk_size})")
                     else:
                         # In test mode, simulate writing at the expected rate
-                        self._write_chunk_to_device(card_idx)
+                        if self._write_chunk_to_device(card_idx):
+                            wrote_any_data = True
                 
-                # Sleep to avoid busy-waiting
-                time.sleep(poll_interval)
+                # Only sleep if we didn't write any data to avoid unnecessary delays
+                if not wrote_any_data:
+                    time.sleep(poll_interval)
                 
             except KeyboardInterrupt:
                 print(f"Writer {self.writer_id}: Stopped by user interrupt.")
@@ -186,9 +202,10 @@ class Writer(Process):
         This is equivalent to the old callback function but called from polling loop.
         
         card_idx: index of the card within the local writer scope
+        Returns: True if data was written, False if no data available
         """
         if not self.running:
-            return
+            return False
 
         # Wait for the ready signal from the pipe up to timeout (in milliseconds)        
         if self.ready_sockets[card_idx].poll(timeout=self.timeout):
@@ -198,12 +215,22 @@ class Writer(Process):
             #print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
         else:
             # No data ready, just return without error in polling mode
-            return
+            return False
         
         if chunk_idx == -1:
             print(f"Writer {self.writer_id} received stop message.")
             self.running = False
-            return
+            # Immediately stop DAQ tasks to prevent underrun errors during shutdown
+            if not TEST_MODE and self.tasks:
+                print(f"Writer {self.writer_id}: Stopping DAQ tasks immediately to prevent underrun...")
+                for task_idx, task in enumerate(self.tasks):
+                    if task:
+                        try:
+                            task.stop()
+                            print(f"Writer {self.writer_id}: Stopped DAQ task {task_idx}")
+                        except Exception as e:
+                            print(f"Writer {self.writer_id}: Error stopping task {task_idx}: {e}")
+            return False
         
         if card_idx_recv != self.card_indices[card_idx]:
             raise ValueError(f"Card index mismatch: {card_idx_recv} != {self.card_indices[card_idx]}")
@@ -237,6 +264,9 @@ class Writer(Process):
 
         # Report back that the buffer slot is free
         self.report_sockets[card_idx].send(self.REPORT_STRUCT.pack(chunk_idx, buf_idx, card_idx_recv))
+        
+        # Return True to indicate successful write
+        return True
 
     def _configure_device(self, card_idx: int):
         card = self.cards[card_idx]
@@ -317,18 +347,27 @@ class Writer(Process):
         # Save the tasks
         self.tasks[card_idx] = task
 
-    def _initialize_device(self, card_idx: int, timeout=1.0):
+    def _initialize_device(self, card_idx: int, timeout=5.0):
         """
         Load the device buffer until full.
         """
         realtime_timeout = self.timeout
 
-        # Set longer timeout for initial buffer loading
+        # Set longer timeout for initial buffer loading (5 seconds)
         self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000)
 
+        print(f"Writer {self.writer_id}: Preloading buffer for card {card_idx} with {self.outbuf_num_chunks} chunks...")
+        
         # Preload the buffer
+        chunks_loaded = 0
         for i in range(self.outbuf_num_chunks):
-            self._write_chunk_to_device(card_idx)
+            if self._write_chunk_to_device(card_idx):
+                chunks_loaded += 1
+            else:
+                print(f"Writer {self.writer_id}: Warning - Only loaded {chunks_loaded}/{self.outbuf_num_chunks} chunks during initialization")
+                break
+        
+        print(f"Writer {self.writer_id}: Successfully preloaded {chunks_loaded} chunks for card {card_idx}")
 
         # Reset the timeout to the original value
         self.timeout = realtime_timeout
@@ -345,10 +384,22 @@ class Writer(Process):
 
             # If we have a task, wait for it to finish
             if self.tasks:
-                for task in self.tasks:
+                for task_idx, task in enumerate(self.tasks):
                     if task:
-                        task.stop()
-                        task.close()
+                        try:
+                            # Stop task if not already stopped
+                            if not task.is_task_done():
+                                print(f"Writer {self.writer_id}: Task {task_idx} still running, stopping...")
+                                task.stop()
+                            else:
+                                print(f"Writer {self.writer_id}: Task {task_idx} already stopped")
+                        except Exception as e:
+                            print(f"Writer {self.writer_id}: Error stopping task {task_idx}: {e}")
+                        try:
+                            task.close()
+                            print(f"Writer {self.writer_id}: Closed task {task_idx}")
+                        except Exception as e:
+                            print(f"Writer {self.writer_id}: Error closing task {task_idx}: {e}")
 
             # Close ZMQ sockets and context
             for ready_socket in self.ready_sockets:
