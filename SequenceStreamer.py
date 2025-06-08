@@ -467,7 +467,7 @@ if __name__ == "__main__":
     #ch0.linramp(0.0, 1.0, start=0, end=2)
     #ch0.const(1.0, 1.0, value=5.0)
     #ch0.linramp(3.0, 1.0, start=0, end=6.8)
-    ch0.sine(0.0, 10*60.0, freq=1_000, amp=2, phase=0)
+    ch0.sine(0.0, 3, freq=1_000, amp=2, phase=0)
 
     # Channel 1
     ch1 = AOSequence(channel_id="ao0", sample_rate=sample_rate)
@@ -487,9 +487,14 @@ if __name__ == "__main__":
     ch2.linramp(6.0, 1.0, start=0, end=-2)
 
     # Channel 1 digital 
-    ch3 = DOSequence(channel_id="port2/line0", sample_rate=int(10e6))
+    ch3 = DOSequence(channel_id="port0/line0", sample_rate=int(10e6))
     ch3.high(0, 2.0)
     ch3.low(2.0, 0.5)
+
+    ch4 = DOSequence(channel_id="port0/line2", sample_rate=int(10e6))
+    ch4.high(0, 2.0)
+    ch4.low(2.0, 0.5)
+
 
     # Set the chunk size and compile 
     chunk_size = 65536
@@ -513,7 +518,7 @@ if __name__ == "__main__":
     )
 
     card3 = NICard(
-        device_name="PXI1Slot7", 
+        device_name="PXI1Slot8", 
         sample_rate=int(10e6),
         sequences=[ch3],
         trigger_source=card1.trigger_source,
@@ -521,11 +526,11 @@ if __name__ == "__main__":
     )
 
     # Aggregate
-    cards = [card1]
+    cards = [card1, card3]
 
     # Compile the cards
     for card in cards:
-        card.compile(chunk_size=chunk_size, external_stop_time=10*60.0)
+        card.compile(chunk_size=chunk_size, external_stop_time=4)
 
     # Example usage with context manager
     with SequenceStreamer(

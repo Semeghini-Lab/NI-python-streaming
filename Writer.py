@@ -9,6 +9,7 @@ import numpy as np
 from NICard import NICard
 from multiprocessing import Process, shared_memory
 import zmq
+from nidaqmx.constants import LineGrouping
 
 if sys.platform == "darwin":
     TEST_MODE = True
@@ -76,11 +77,10 @@ class Writer(Process):
     def run(self):
         if not TEST_MODE:
             import nidaqmx as ni
-            from nidaqmx.stream_writers import AnalogMultiChannelWriter, DigitalMultiChannelWriter
+            from nidaqmx.stream_writers import AnalogMultiChannelWriter
 
             self.ni = ni
             self.AMCW = AnalogMultiChannelWriter
-            self.DMCW = DigitalMultiChannelWriter
         try:
             # Create ZMQ context and sockets
             self.context = zmq.Context()
@@ -220,9 +220,11 @@ class Writer(Process):
             if not TEST_MODE:
                 card = self.cards[card_idx]
                 if card.is_digital:
-                    # Convert boolean data to uint32 port format for digital cards
-                    digital_data = self._convert_digital_data_to_port_format(self.buffers[card_idx][buf_idx])
-                    self.writers[card_idx].write_many_sample_port_uint32(digital_data)
+                    digital_data = self.buffers[card_idx][buf_idx]
+                    # For single digital channel, convert from (1, samples) to (samples,)
+                    if digital_data.shape[0] == 1:
+                        digital_data = digital_data.squeeze(axis=0)  # Remove the first dimension
+                    self.tasks[card_idx].write(digital_data)
                 else:
                     # Use standard write method for analog cards
                     self.writers[card_idx].write_many_sample(self.buffers[card_idx][buf_idx])
@@ -246,7 +248,8 @@ class Writer(Process):
         if card.is_digital:
             for do in card.sequences:
                 task.do_channels.add_do_chan(
-                    f"{card.device_name}/{do.channel_id}"
+                    f"{card.device_name}/{do.channel_id}",
+                    line_grouping=LineGrouping.CHAN_PER_LINE
                 )
         else:
             for ao in card.sequences:
@@ -302,11 +305,14 @@ class Writer(Process):
         # Configure the output buffer size for analog output
         task.out_stream.output_buf_size = outbuf_size
 
-        # Create a writer for the analog output channels
-        self.writers[card_idx] = (self.DMCW if card.is_digital else self.AMCW)(
-            task.out_stream,
-            auto_start=False
-        )
+        # Create a writer for analog output channels only
+        if card.is_digital:
+            self.writers[card_idx] = None
+        else:
+            self.writers[card_idx] = self.AMCW(
+                task.out_stream,
+                auto_start=False
+            )
 
         # Save the tasks
         self.tasks[card_idx] = task
