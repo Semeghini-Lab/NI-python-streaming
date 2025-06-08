@@ -167,10 +167,7 @@ class Writer(Process):
                             if self._write_chunk_to_device(card_idx):
                                 wrote_any_data = True
                                 # Check space again after writing
-                                new_space = self.tasks[card_idx].out_stream.space_avail
-                                if new_space != space_available - card.chunk_size:
-                                    print(f"Writer {self.writer_id}: Unexpected buffer space change. Was {space_available}, expected {space_available - card.chunk_size}, now {new_space}")
-                                space_available = new_space
+                                space_available = self.tasks[card_idx].out_stream.space_avail
                             else:
                                 # No more data available from manager, break inner loop
                                 break

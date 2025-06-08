@@ -520,7 +520,7 @@ if __name__ == "__main__":
     card3 = NICard(
         device_name="PXI1Slot8", 
         sample_rate=int(10e6),
-        sequences=[ch3],
+        sequences=[ch3, ch4],
         trigger_source=card1.trigger_source,
         clock_source=card1.clock_source
     )
