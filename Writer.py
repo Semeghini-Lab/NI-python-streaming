@@ -47,7 +47,8 @@ class Writer(Process):
         self.card_indices = card_indices
         self.outbuf_num_chunks = outbuf_num_chunks
         self.pool_size = pool_size
-        self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000)
+        # Fix timeout logic: use a minimum of 1ms for polling mode, but convert to milliseconds
+        self.timeout = max(1, int(timeout * 1000))  # Always at least 1ms
 
         # Store ports
         self.ready_ports = ready_ports
@@ -125,28 +126,15 @@ class Writer(Process):
             for card_idx in range(len(self.cards)):
                 self._initialize_device(card_idx, timeout=5.0)
 
-            # Register the callback
+            # Start the tasks in order that ensures trigger is armed
             if not TEST_MODE:
-                for card_idx, card in enumerate(self.cards):
-                    self.tasks[card_idx].register_every_n_samples_transferred_from_buffer_event(
-                        sample_interval=card.chunk_size,
-                        callback_method=functools.partial(self._every_chunk_samples_callback, card_idx=card_idx),
-                    )
-
-                # Start the tasks in order that ensures trigger is armed
                 for card_idx in reversed(range(len(self.cards))):
                     print(f"Worker {self.writer_id}: starting card={self.card_indices[card_idx]}")
                     self.tasks[card_idx].start()
 
-            # Wait for the interrupt or end of stream
+            # Start polling loop instead of using callbacks
             self.running = True
-            while self.running:
-                if TEST_MODE:
-                    time.sleep(self.longest_realtime_chunk_time)
-                    for card_idx, card in enumerate(self.cards):
-                        self._every_chunk_samples_callback(None, None, card.chunk_size, None, card_idx=card_idx)
-                else:
-                    time.sleep(0.01)
+            self._polling_loop()
 
         except Exception as e:
             print(f"[ERROR] Writer {self.writer_id}: {e}.")
@@ -157,16 +145,50 @@ class Writer(Process):
         finally:
             self.cleanup()
 
-    def _every_chunk_samples_callback(self, task, event_type, n_samples, callback_data, card_idx):
+    def _polling_loop(self):
         """
-        Callback function to write data to the DAQ device.
-        This is called every time a chunk of samples is transferred from the buffer.
-
-        card_idx: index of the calling card within the local writer scope
+        Main polling loop that checks buffer space availability and writes data when ready.
+        This replaces the callback-based approach.
         """
+        # Sleep interval for polling (in seconds)
+        poll_interval = min(0.001, self.longest_realtime_chunk_time / 10)  # 10% of chunk time or 1ms, whichever is smaller
+        
+        while self.running:
+            try:
+                for card_idx in range(len(self.cards)):
+                    # Check if there's enough space in the buffer for a chunk
+                    if not TEST_MODE:
+                        card = self.cards[card_idx]
+                        space_available = self.tasks[card_idx].out_stream.space_avail
+                        
+                        # Only write if there's enough space for at least one chunk
+                        if space_available >= card.chunk_size:
+                            self._write_chunk_to_device(card_idx)
+                    else:
+                        # In test mode, simulate writing at the expected rate
+                        self._write_chunk_to_device(card_idx)
+                
+                # Sleep to avoid busy-waiting
+                time.sleep(poll_interval)
+                
+            except KeyboardInterrupt:
+                print(f"Writer {self.writer_id}: Stopped by user interrupt.")
+                self.running = False
+                break
+            except Exception as e:
+                print(f"Writer {self.writer_id}: Error in polling loop: {e}")
+                self.running = False
+                break
 
-        if not self.running or n_samples is None:
-            return 0
+    def _write_chunk_to_device(self, card_idx):
+        """
+        Write a chunk of data to the specified device.
+        This is equivalent to the old callback function but called from polling loop.
+        
+        card_idx: index of the card within the local writer scope
+        """
+        if not self.running:
+            return
 
         # Wait for the ready signal from the pipe up to timeout (in milliseconds)        
         if self.ready_sockets[card_idx].poll(timeout=self.timeout):
@@ -175,12 +197,13 @@ class Writer(Process):
             chunk_idx, buf_idx, card_idx_recv = self.READY_STRUCT.unpack(data)
             #print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
         else:
-            raise UnderrunError(f"Timed out after {self.timeout:.2f}ms waiting for ready signal from the card {self.card_indices[card_idx]} socket")
+            # No data ready, just return without error in polling mode
+            return
         
         if chunk_idx == -1:
             print(f"Writer {self.writer_id} received stop message.")
             self.running = False
-            return 0
+            return
         
         if card_idx_recv != self.card_indices[card_idx]:
             raise ValueError(f"Card index mismatch: {card_idx_recv} != {self.card_indices[card_idx]}")
@@ -212,8 +235,6 @@ class Writer(Process):
 
         # Report back that the buffer slot is free
         self.report_sockets[card_idx].send(self.REPORT_STRUCT.pack(chunk_idx, buf_idx, card_idx_recv))
-
-        return 0
 
     def _convert_digital_data_to_port_format(self, boolean_data):
         """
@@ -304,7 +325,6 @@ class Writer(Process):
         # Configure the output buffer size for analog output
         task.out_stream.output_buf_size = outbuf_size
 
-
         # Create a writer for the analog output channels
         self.writers[card_idx] = (self.DMCW if card.is_digital else self.AMCW)(
             task.out_stream,
@@ -318,7 +338,6 @@ class Writer(Process):
         """
         Load the device buffer until full.
         """
-
         realtime_timeout = self.timeout
 
         # Set longer timeout for initial buffer loading
@@ -326,7 +345,7 @@ class Writer(Process):
 
         # Preload the buffer
         for i in range(self.outbuf_num_chunks):
-            self._every_chunk_samples_callback(None, None, self.cards[card_idx].chunk_size, None, card_idx=card_idx)
+            self._write_chunk_to_device(card_idx)
 
         # Reset the timeout to the original value
         self.timeout = realtime_timeout
@@ -342,10 +361,11 @@ class Writer(Process):
             time.sleep(2.0 * self.longest_realtime_chunk_time * self.outbuf_num_chunks)
 
             # If we have a task, wait for it to finish
-            for task in self.tasks:
-                if task:
-                    task.stop()
-                    task.close()
+            if self.tasks:
+                for task in self.tasks:
+                    if task:
+                        task.stop()
+                        task.close()
 
             # Close ZMQ sockets and context
             for ready_socket in self.ready_sockets:

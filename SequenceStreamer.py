@@ -530,7 +530,7 @@ if __name__ == "__main__":
     # Example usage with context manager
     with SequenceStreamer(
         cards=cards, # List of cards to stream to
-        num_workers=4, # Number of worker processes
+        num_workers=1, # Number of worker processes
         num_writers=1, # Number of writer processes
         pool_size=8,   # Size of the memory pool
     ) as streamer:
