@@ -236,29 +236,6 @@ class Writer(Process):
         # Report back that the buffer slot is free
         self.report_sockets[card_idx].send(self.REPORT_STRUCT.pack(chunk_idx, buf_idx, card_idx_recv))
 
-    def _convert_digital_data_to_port_format(self, boolean_data):
-        """
-        Convert boolean digital data (32 lines × samples) to uint32 port format (4 ports × samples).
-        
-        Args:
-            boolean_data: numpy array of shape (32, samples) with boolean values
-            
-        Returns:
-            numpy array of shape (4, samples) with uint32 values where each uint32 
-            represents 8 digital lines (1 port)
-        """
-        num_samples = boolean_data.shape[1]
-        port_data = np.zeros((4, num_samples), dtype=np.uint32)
-        
-        for port in range(4):
-            for line in range(8):
-                line_idx = port * 8 + line
-                if line_idx < boolean_data.shape[0]:
-                    # Set bit 'line' in the uint32 for this port when line is True
-                    port_data[port] |= (boolean_data[line_idx].astype(np.uint32) << line)
-        
-        return port_data
-
     def _configure_device(self, card_idx: int):
         card = self.cards[card_idx]
 

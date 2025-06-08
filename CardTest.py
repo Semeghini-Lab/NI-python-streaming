@@ -366,16 +366,25 @@ def stream_infinite_do():
 
 def stream_infinite_do_polling():
     """
-    Stream continuous digital patterns on a digital output channel using polling
+    Stream continuous digital patterns on digital output channels using polling
     to detect when to feed more data into the buffer.
     
     This version avoids callbacks, suitable for hardware like NI-6535 in buffered mode.
+    Outputs different patterns on 4 digital lines from different ports.
     """
     device_name = "PXI1Slot8"
-    channel_name = f"{device_name}/port0"
+    channel_names = [
+        f"{device_name}/port0/line0", 
+        f"{device_name}/port0/line2",
+        f"{device_name}/port1/line1", 
+        f"{device_name}/port1/line3"
+    ]
 
     sample_rate = 10_000_000
-    frequency = 100.0  # Hz square wave
+    frequency_ch0 = 100.0   # Hz square wave for port0/line0
+    frequency_ch1 = 250.0   # Hz square wave for port0/line2
+    frequency_ch2 = 400.0   # Hz square wave for port1/line1
+    frequency_ch3 = 600.0   # Hz square wave for port1/line3
     chunk_size = 65536
     buf_out_size = 2 * chunk_size  # buffer size
     sample_counter = 0
@@ -383,16 +392,22 @@ def stream_infinite_do_polling():
     task = ni.Task()
 
     try:
-        print(f"Configuring digital streaming on {device_name}...")
-        print(f"DEBUG: Channel: {channel_name}")
+        print(f"Configuring quad-channel digital streaming on {device_name}...")
+        print(f"DEBUG: Channels: {channel_names}")
         print(f"DEBUG: Sample rate: {sample_rate} Hz")
-        print(f"DEBUG: Square wave frequency: {frequency} Hz")
+        print(f"DEBUG: CH0 - Square wave frequency: {frequency_ch0} Hz (port0/line0)")
+        print(f"DEBUG: CH1 - Square wave frequency: {frequency_ch1} Hz (port0/line2)")
+        print(f"DEBUG: CH2 - Square wave frequency: {frequency_ch2} Hz (port1/line1)")
+        print(f"DEBUG: CH3 - Square wave frequency: {frequency_ch3} Hz (port1/line3)")
         print(f"DEBUG: Chunk size: {chunk_size} samples")
         print(f"DEBUG: Buffer size: {buf_out_size} samples")
 
-        # Add digital output channel
-        task.do_channels.add_do_chan(channel_name)
-        print(f"DEBUG: Added digital output channel: {channel_name}")
+        # Add digital output channels
+        for i, channel_name in enumerate(channel_names):
+            task.do_channels.add_do_chan(channel_name)
+            print(f"DEBUG: Added digital output channel {i}: {channel_name}")
+        
+        print(f"Total channels configured: {len(channel_names)}")
 
         # Configure buffered sample clock
         task.timing.cfg_samp_clk_timing(
@@ -406,23 +421,31 @@ def stream_infinite_do_polling():
         task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
         print(f"DEBUG: Disabled regeneration mode")
 
-        # Preload buffer with zeros
-        preload_data = np.zeros(buf_out_size, dtype=np.uint32)
+        # Preload buffer with zeros for all channels
+        preload_data = np.zeros((4, buf_out_size), dtype=bool)  # 4 channels x buf_out_size samples
         task.write(preload_data, auto_start=False)
-        print(f"DEBUG: Preloaded buffer with {len(preload_data)} zeros")
+        print(f"DEBUG: Preloaded buffer with shape: {preload_data.shape}")
 
         # Start the task
         task.start()
-        print(f"Streaming started on {channel_name} at {sample_rate} Hz")
+        print(f"Streaming started on {channel_names} at {sample_rate} Hz")
         print(f"DEBUG: Task started successfully")
 
         # Start streaming loop
-        period_samples = int(sample_rate / frequency)
+        period_samples_ch0 = int(sample_rate / frequency_ch0)
+        period_samples_ch1 = int(sample_rate / frequency_ch1)
+        period_samples_ch2 = int(sample_rate / frequency_ch2)
+        period_samples_ch3 = int(sample_rate / frequency_ch3)
         start_time = time.time()
         
-        print(f"DEBUG: Starting streaming loop with period_samples={period_samples}")
+        print(f"DEBUG: Starting streaming loop")
+        print(f"DEBUG: CH0 period_samples={period_samples_ch0}, CH1 period_samples={period_samples_ch1}")
+        print(f"DEBUG: CH2 period_samples={period_samples_ch2}, CH3 period_samples={period_samples_ch3}")
         print(f"DEBUG: Chunk size: {chunk_size}, Buffer size: {buf_out_size}")
-        print(f"DEBUG: Square wave period: {period_samples/sample_rate:.6f} seconds")
+        print(f"DEBUG: CH0 square wave period: {period_samples_ch0/sample_rate:.6f} seconds")
+        print(f"DEBUG: CH1 square wave period: {period_samples_ch1/sample_rate:.6f} seconds")
+        print(f"DEBUG: CH2 square wave period: {period_samples_ch2/sample_rate:.6f} seconds")
+        print(f"DEBUG: CH3 square wave period: {period_samples_ch3/sample_rate:.6f} seconds")
 
         while True:
             # Check available space in buffer
@@ -434,19 +457,173 @@ def stream_infinite_do_polling():
                 print(f"DEBUG: Buffer space: {space}/{buf_out_size}, Sample counter: {sample_counter}, Elapsed: {elapsed_time:.2f}s")
 
             if space >= chunk_size:
-                # Generate square wave
+                # Generate square wave patterns for all channels
                 indices = np.arange(chunk_size) + sample_counter * chunk_size
-                pattern_line0 = ((indices % period_samples) < (period_samples // 2)).astype(np.uint32)
-                pattern_line1 = ((indices % (period_samples // 2)) < (period_samples // 4)).astype(np.uint32)
-                data = (pattern_line0 * 1) + (pattern_line1 * 2)  # Bits 0 and 1
+                
+                # Generate pattern for channel 0 (port0/line0)
+                pattern_ch0 = ((indices % period_samples_ch0) < (period_samples_ch0 // 2)).astype(bool)
+                
+                # Generate pattern for channel 1 (port0/line2)  
+                pattern_ch1 = ((indices % period_samples_ch1) < (period_samples_ch1 // 2)).astype(bool)
+                
+                # Generate pattern for channel 2 (port1/line1)
+                pattern_ch2 = ((indices % period_samples_ch2) < (period_samples_ch2 // 2)).astype(bool)
+                
+                # Generate pattern for channel 3 (port1/line3)
+                pattern_ch3 = ((indices % period_samples_ch3) < (period_samples_ch3 // 2)).astype(bool)
+                
+                # Combine patterns into 2D array: [channel, samples]
+                data = np.array([pattern_ch0, pattern_ch1, pattern_ch2, pattern_ch3], dtype=bool)
 
                 # Debug first few samples to verify pattern generation
                 if sample_counter < 3:
-                    print(f"DEBUG: Sample counter {sample_counter}, first 10 data values: {data[:10]}")
-                    print(f"DEBUG: pattern_line0[:10]: {pattern_line0[:10]}")
-                    print(f"DEBUG: pattern_line1[:10]: {pattern_line1[:10]}")
+                    print(f"DEBUG: Sample counter {sample_counter}, data shape: {data.shape}")
+                    print(f"DEBUG: CH0 first 10 values: {data[0, :10]}")
+                    print(f"DEBUG: CH1 first 10 values: {data[1, :10]}")
+                    print(f"DEBUG: CH2 first 10 values: {data[2, :10]}")
+                    print(f"DEBUG: CH3 first 10 values: {data[3, :10]}")
 
-                task.write(data.astype(np.uint32), auto_start=False)
+                task.write(data, auto_start=False)
+                
+                if sample_counter % 100 == 0:
+                    print(f"DEBUG: Successfully wrote chunk {sample_counter}")
+
+                sample_counter += 1
+
+            else:
+                # Sleep a short time to avoid busy-wait
+                if sample_counter < 10:  # Only print for first few iterations
+                    print(f"DEBUG: Waiting for buffer space... current space: {space}, need: {chunk_size}")
+                time.sleep(0.001)
+
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+
+    except DaqError as e:
+        print(f"DAQ Error: {e}")
+        sys.exit(1)
+
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
+
+    finally:
+        print("Stopping and closing task...")
+        try:
+            task.stop()
+            task.close()
+        except:
+            pass
+        print("Task cleaned up successfully.")
+
+def stream_infinite_ao_polling():
+    """
+    Stream continuous analog output using polling to detect when to feed more data into the buffer.
+    
+    This version avoids callbacks and uses polling to check buffer availability.
+    Outputs different waveforms on 2 analog output channels.
+    """
+    device_name = "PXI1Slot3"
+    channel_names = [f"{device_name}/ao0", f"{device_name}/ao1"]
+
+    sample_rate = 1_000_000  # 1 MS/s
+    frequency_ch0 = 2000.0  # Hz sine wave for channel 0
+    frequency_ch1 = 1500.0  # Hz sine wave for channel 1
+    amplitude_ch0 = 2.0  # V for channel 0
+    amplitude_ch1 = 1.5  # V for channel 1
+    chunk_size = 65536
+    buf_out_size = 2 * chunk_size  # buffer size
+    sample_counter = 0
+
+    task = ni.Task()
+
+    try:
+        print(f"Configuring dual-channel analog streaming on {device_name}...")
+        print(f"DEBUG: Channels: {channel_names}")
+        print(f"DEBUG: Sample rate: {sample_rate} Hz")
+        print(f"DEBUG: CH0 - Sine wave frequency: {frequency_ch0} Hz, Amplitude: {amplitude_ch0} V")
+        print(f"DEBUG: CH1 - Sine wave frequency: {frequency_ch1} Hz, Amplitude: {amplitude_ch1} V")
+        print(f"DEBUG: Chunk size: {chunk_size} samples")
+        print(f"DEBUG: Buffer size: {buf_out_size} samples")
+
+        # Add analog output channels
+        ao_channels = []
+        for i, channel_name in enumerate(channel_names):
+            ao = task.ao_channels.add_ao_voltage_chan(
+                channel_name,
+                name_to_assign_to_channel="",
+                min_val=-4.0,
+                max_val=4.0
+            )
+            ao_channels.append(ao)
+            print(f"DEBUG: Added analog output channel {i}: {channel_name}")
+            print(f"Channel {ao.name} configured with range [{ao.ao_min}, {ao.ao_max}] V.")
+        
+        print(f"Total channels configured: {len(ao_channels)}")
+
+        # Configure buffered sample clock
+        task.timing.cfg_samp_clk_timing(
+            rate=sample_rate,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=buf_out_size
+        )
+        print(f"DEBUG: Configured sample clock timing")
+
+        # Disable regeneration to avoid repeating stale data
+        task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
+        print(f"DEBUG: Disabled regeneration mode")
+
+        # Preload buffer with zeros for both channels
+        preload_data = np.zeros((2, buf_out_size), dtype=np.float64)  # 2 channels x buf_out_size samples
+        task.write(preload_data, auto_start=False)
+        print(f"DEBUG: Preloaded buffer with {preload_data.shape} zeros")
+
+        # Start the task
+        task.start()
+        print(f"Streaming started on {channel_names} at {sample_rate} Hz")
+        print(f"DEBUG: Task started successfully")
+
+        # Start streaming loop
+        start_time = time.time()
+        
+        print(f"DEBUG: Starting streaming loop")
+        print(f"DEBUG: Chunk size: {chunk_size}, Buffer size: {buf_out_size}")
+        print(f"DEBUG: CH0 sine wave period: {1.0/frequency_ch0:.6f} seconds")
+        print(f"DEBUG: CH1 sine wave period: {1.0/frequency_ch1:.6f} seconds")
+
+        while True:
+            # Check available space in buffer
+            space = task.out_stream.space_avail
+            
+            # Print buffer status every 100 iterations
+            if sample_counter % 100 == 0:
+                elapsed_time = time.time() - start_time
+                print(f"DEBUG: Buffer space: {space}/{buf_out_size}, Sample counter: {sample_counter}, Elapsed: {elapsed_time:.2f}s")
+
+            if space >= chunk_size:
+                # Generate sine wave for this chunk
+                # Calculate the initial time offset based on the current counter
+                t0 = sample_counter * chunk_size / sample_rate
+                t1 = t0 + chunk_size / sample_rate
+                
+                # Generate the time vector for the current chunk
+                t = np.linspace(t0, t1, chunk_size, endpoint=False)
+                
+                # Generate the sine wave data for both channels
+                data_ch0 = amplitude_ch0 * np.sin(2 * np.pi * frequency_ch0 * t)
+                data_ch1 = amplitude_ch1 * np.sin(2 * np.pi * frequency_ch1 * t)
+                
+                # Combine into 2D array: [channel, samples]
+                data = np.array([data_ch0, data_ch1], dtype=np.float64)
+
+                # Debug first few samples to verify pattern generation
+                if sample_counter < 3:
+                    print(f"DEBUG: Sample counter {sample_counter}, data shape: {data.shape}")
+                    print(f"DEBUG: CH0 first 10 values: {data[0, :10]}")
+                    print(f"DEBUG: CH1 first 10 values: {data[1, :10]}")
+                    print(f"DEBUG: Time range: {t0:.6f} to {t1:.6f} seconds")
+
+                task.write(data, auto_start=False)
                 
                 if sample_counter % 100 == 0:
                     print(f"DEBUG: Successfully wrote chunk {sample_counter}")
