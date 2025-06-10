@@ -219,6 +219,7 @@ if __name__ == "__main__":
     # FM mode set to -/+ 10 V = -/+ 26.2 MHz
     exp.add_ao_channel('PXI1Slot2', 1, name="MOT_RB_REPUMP_FM")
 
-    mot_coil.linramp(0, duration=1 * ms, start=0, end=10)
+    mot_coil.linramp(0, 1 * ms, start=0, end=10)
+    mot_coil.sine(1*ms, cmd_duration=1 * ms, freq=1.0, amp=10, phase=0)
 
     exp.compile(chunk_size=65536)
