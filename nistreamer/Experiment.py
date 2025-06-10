@@ -1,5 +1,7 @@
 # Experiment.py
 
+import time
+
 from nistreamer.NICard import NICard
 from nistreamer.Sequences import AOSequence, DOSequence
 
@@ -79,6 +81,8 @@ class Experiment:
         
         self.cards[card_name].add_sequence(seq)
 
+        return seq
+
     def add_do_channel(self, card_name, port_id, line_id, name=None, default_value=0):
         # Make sure the default value is an integer or a boolean
         if not isinstance(default_value, (int, bool)):
@@ -97,6 +101,35 @@ class Experiment:
         
         self.cards[card_name].add_sequence(seq)
 
+        return seq
+
+    def compile(self, chunk_size: int = 65536, total_time: float = None):
+        """Compile the experiment."""
+        
+        # If there is a primary card, make sure it has at least one channel defined
+        if self.primary_card:
+            if self.primary_card.sequences is None:
+                raise ValueError("Primary card has no sequences.")
+            
+        # Start the timing of the compilation
+        compile_time = time.time()
+            
+        # If the total time is not specified, find the longest sequence
+        if total_time is None:
+            # Find the instruction that ends last
+            total_time = max([max([max(seq.instructions, key=lambda x: x.end_sample).end_sample if seq.instructions else 0 for seq in card.sequences])/card.sample_rate if card.sequences else 0 for card in self.cards.values()])
+        
+        if total_time == 0.0:
+            raise NotImplementedError("Total time of the experiment is 0.0, which is not supported.")
+        
+        print(f"Compiling experiment...", end="")
+
+        # Compile all cards
+        for card in self.cards.values():
+            card.compile(chunk_size=chunk_size, external_stop_time=total_time)
+
+        print(f" done in {(time.time() - compile_time)*1e3:.3f} ms.")
+
     def get_cards(self):
         """Return a list of all cards, with the primary card first."""
         return [self.primary_card] + [card for card in self.cards.values() if card != self.primary_card]
@@ -106,6 +139,10 @@ class Experiment:
         return {card.device_name: card.sequences for card in self.cards.values()}
 
 if __name__ == "__main__":
+    # Variables:
+    ms = 1e-3
+
+
     # ----- Add cards -----
     TRIG_LINE = "PXI_Trig0"
     REF_CLK_LINE = "PXI_Trig7"
@@ -115,38 +152,23 @@ if __name__ == "__main__":
     # Add the primary card
     exp.add_card("PXI1Slot2", sample_rate=0.4e6, primary=True, trigger_source=TRIG_LINE, clock_source=REF_CLK_LINE)
 
-    # ----- Add remaining analog cards -----
-    '''
-    For NI PXIe-6739 the max sampling rates are:
-    - 1-8 channels (1 per bank of 4 consecutive channels): 1e6 Hz max
-    - otherwise: 0.4e6 Hz max
-    '''
-    exp.add_card("PXI1Slot3", sample_rate=0.4e6)
-
     # ----- Add remaining digital cards -----
     exp.add_card('PXI1Slot7', sample_rate=10e6)
 
     ### Main 3D MOT coils
     # 0-10 V for 0-100 A
     # from simulation: 1.16 G/(cm A)
-    exp.add_ao_channel('PXI1Slot2', 0, name="MOT_COIL")
-
-    ### MOT bias coils
-    exp.add_ao_channel('PXI1Slot2', 8, name="MOT_COIL_BIAS_ARM_Z")
-    exp.add_ao_channel('PXI1Slot2', 9, name="MOT_COIL_BIAS_ARM_A")
-    exp.add_ao_channel('PXI1Slot2', 10,name="MOT_COIL_BIAS_ARM_C")
+    mot_coil = exp.add_ao_channel('PXI1Slot2', 0, name="MOT_COIL")
 
     ### TTL for Rb MOT AOMs
     # logic level 0 = set output amplitude
     # logic level 1 = output off
-    exp.add_do_channel('PXI1Slot7', 0, 0, name="MOT_RB_REPUMP_TTL")
-    exp.add_do_channel('PXI1Slot7', 0, 1, name="MOT_RB_3D_COOLING_TTL")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
-    exp.add_do_channel('PXI1Slot7', 0, 2, name="MOT_RB_2D_COOLING_TTL")
-    exp.add_do_channel('PXI1Slot7', 1, 1, name="MOT_RB_PROBE_TTL")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+    exp.add_do_channel('PXI1Slot7', 0, 0, name="MOT_RB_REPUMP_TTL")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
 
     ### FM for Rb MOT AOMs
     # FM mode set to -/+ 10 V = -/+ 26.2 MHz
     exp.add_ao_channel('PXI1Slot2', 1, name="MOT_RB_REPUMP_FM")
-    exp.add_ao_channel('PXI1Slot2', 2, name="MOT_RB_3D_COOLING_FM")
-    exp.add_ao_channel('PXI1Slot2', 3, name="MOT_RB_2D_COOLING_FM")
-    exp.add_ao_channel('PXI1Slot2', 16, name="MOT_RB_PROBE_FM")
+
+    mot_coil.linramp(0, duration=1 * ms, start=0, end=10)
+
+    exp.compile(chunk_size=65536)
