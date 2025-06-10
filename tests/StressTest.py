@@ -2,12 +2,16 @@
 # Stress test for the NI streaming system with multiple cards and channels
 # Tests PXI1Slot3,4 (analog) and PXI1Slot8,9 (digital) with random sequences
 
-import sys
+import sys, os
 import numpy as np
 import random
-from Sequences import AOSequence, DOSequence
-from NICard import NICard
-from SequenceStreamer import SequenceStreamer
+
+# Use the local package install
+sys.path.insert(0,os.path.abspath(os.path.join(os.path.dirname(__file__),"..")))
+
+from nistreamer.Sequences import AOSequence, DOSequence
+from nistreamer.NICard import NICard
+from nistreamer.SequenceStreamer import SequenceStreamer
 
 def generate_random_analog_sequence(channel_id: str, sample_rate: int, total_duration: float = 60.0):
     """

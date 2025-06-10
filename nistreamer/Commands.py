@@ -1,5 +1,5 @@
 import numpy as np
-from Tags import analog_output, digital_output
+from nistreamer.Tags import analog_output, digital_output
 
 '''
 Analog output commands. All function must take the positional argument t [ndarray]

@@ -8,10 +8,10 @@ import zmq
 
 import heapq
 
-from Sequences import AOSequence, DOSequence
-from NICard import NICard
-from Worker import Worker
-from Writer import Writer   
+from nistreamer.Sequences import AOSequence, DOSequence
+from nistreamer.NICard import NICard
+from nistreamer.Worker import Worker
+from nistreamer.Writer import Writer   
 
 import multiprocessing
 

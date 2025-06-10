@@ -1,5 +1,5 @@
 from typing import List, Optional
-from Sequences import Sequence, DOSequence, AOSequence
+from nistreamer.Sequences import Sequence, DOSequence, AOSequence
 import numpy as np
 import os
 

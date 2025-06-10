@@ -6,8 +6,8 @@ import numpy as np
 import time
 import bisect
 from multiprocessing import Process, shared_memory
-from Sequences import AOSequence, DOSequence
-from NICard import NICard
+from nistreamer.Sequences import AOSequence, DOSequence
+from nistreamer.NICard import NICard
 
 import zmq
 

@@ -4,12 +4,12 @@
 import sys
 import time
 import struct
-import functools
 import numpy as np
-from NICard import NICard
 from multiprocessing import Process, shared_memory
 import zmq
 from nidaqmx.constants import LineGrouping
+
+from nistreamer.NICard import NICard
 
 if sys.platform == "darwin":
     TEST_MODE = True

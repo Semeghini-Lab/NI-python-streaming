@@ -1,8 +1,8 @@
 import inspect
 from functools import partial
-import Commands
-from Commands import *
-from Instruction import *
+import nistreamer.Commands as Commands
+from nistreamer.Commands import *
+from nistreamer.Instruction import *
 import numpy as np
 
 class Sequence:
