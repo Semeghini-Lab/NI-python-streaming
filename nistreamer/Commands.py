@@ -1,5 +1,5 @@
 import numpy as np
-from nistreamer.Tags import analog_output, digital_output
+from nistreamer.Tags import analog_output, digital_output, propagate_start_value, propagate_duration
 
 '''
 Analog output commands. All function must take the positional argument t [ndarray]
@@ -20,8 +20,15 @@ def sine(t, freq, amp, phase):
     return amp * np.sin(2 * np.pi * freq * t + phase)
 
 @analog_output
-def linramp(t, start, end):
-    return start + (end-start) * t
+@propagate_duration
+def linramp(t, start, end, duration=None):
+    return start + (end-start) * t / duration
+
+@analog_output
+@propagate_duration
+@propagate_start_value
+def rampto(t, value, start=None, duration=None):
+    return start + (value-start) * t / duration
 
 # ====== DIGITAL OUTPUT COMMANDS ======
 
