@@ -38,6 +38,7 @@ class Writer(Process):
             card_indices: list[int],
             outbuf_num_chunks: int,  # Total number of chunks in the card buffer
             pool_size: int,  # Size of the memory pool for calculations
+            num_all_cards: int,  # Total number of cards in the system
             ready_ports: list[int],  # Ports for receiving ready signals
             report_ports: list[int],  # Ports for sending reports
             timeout: float = 0.0,  # Grace period after next chunk is expected (in seconds)
@@ -49,13 +50,21 @@ class Writer(Process):
         self.outbuf_num_chunks = outbuf_num_chunks
         self.pool_size = pool_size
         self.timeout = int(timeout)
+        self.num_all_cards = num_all_cards
 
         # Store ports
         self.ready_ports = ready_ports
         self.report_ports = report_ports
 
-        # Longest realtime chunk time (in seconds)
+        # How many chunks need to be written for each card
+        self.num_chunks_to_write = [card.num_chunks for card in self.cards]
+
+        # Realtime chunk time (in seconds)
         self.longest_realtime_chunk_time = max([card.chunk_size/card.sample_rate for card in self.cards])
+        self.shortest_realtime_chunk_time = min([card.chunk_size/card.sample_rate for card in self.cards])
+
+        # Check if there is a primary card
+        self.has_primary_card = any([card.is_primary for card in self.cards])
 
         # Make sure we have the correct number of ports
         if len(self.ready_ports) != len(self.cards):
@@ -67,11 +76,16 @@ class Writer(Process):
         self.tasks = None
         self.writers = None
         self.context = None
-        self.ready_sockets = []
-        self.report_sockets = []
-        self.buffers = []
+        self.active_cards = None
+        self.ready_sockets = None
+        self.report_sockets = None
+        self.buffers = None
         self.last_written_chunk_indices = None
         self.shms = None  # Store shared memory objects
+
+        # Shared memory for the card initialization flags
+        self.shm_init_card_flags = None
+        self.init_card_flags = None
 
     def run(self):
         if not TEST_MODE:
@@ -91,6 +105,9 @@ class Writer(Process):
 
             # Set to running state
             self.running = True
+
+            # Set all cards to active
+            self.active_cards = [card_idx for card_idx in range(len(self.cards))]
             
             # Connect to ports
             for ready_socket, ready_port in zip(self.ready_sockets, self.ready_ports):
@@ -111,6 +128,14 @@ class Writer(Process):
                 )
                 self.buffers.append(buffer)
 
+            # Initialize the card initialization flags buffer
+            self.shm_init_card_flags = shared_memory.SharedMemory(name="nistreamer_init_card_flags")
+            self.init_card_flags = np.ndarray(
+                (self.num_all_cards,),
+                dtype=bool,
+                buffer=self.shm_init_card_flags.buf
+            )
+
             # Initialize the chunk index counter for continuity tracking (sanity check)
             self.last_written_chunk_indices = [-1] * len(self.cards)
 
@@ -118,16 +143,21 @@ class Writer(Process):
             if not TEST_MODE:
                 self.tasks = [None] * len(self.cards)
                 self.writers = [None] * len(self.cards)
-                for card_idx in range(len(self.cards)):
+                for card_idx in self.active_cards:
                     self._configure_device(card_idx)
 
             # Preload the buffer before starting the task
-            for card_idx in range(len(self.cards)):
+            for card_idx in self.active_cards:
                 self._initialize_device(card_idx, timeout=5.0)
+
+            # If there is a primary card, wait until all cards are initialized
+            if self.has_primary_card:
+                while not all(self.init_card_flags):
+                    time.sleep(0.00001) # Wait for 10 microseconds
 
             # Start the tasks in order that ensures trigger is armed
             if not TEST_MODE:
-                for card_idx in reversed(range(len(self.cards))):
+                for card_idx in reversed(self.active_cards):
                     print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}")
                     self.tasks[card_idx].start()
 
@@ -149,37 +179,27 @@ class Writer(Process):
         Main polling loop that checks buffer space availability and writes data when ready.
         This replaces the callback-based approach.
         """
-        # Sleep interval for polling (in seconds) - make it smaller for better responsiveness
-        poll_interval = min(0.0001, self.longest_realtime_chunk_time / 100)  # 1% of chunk time or 0.1ms, whichever is smaller
-        
         while self.running:
-            try:
-                for card_idx in range(len(self.cards)):
-                    # Check if there's enough space in the buffer for a chunk
-                    if not TEST_MODE:
-                        card = self.cards[card_idx]
-                        
-                        # Keep filling the buffer while there's space - be more aggressive
-                        if self.tasks[card_idx].out_stream.space_avail == 0:
-                            raise ValueError(f"BROKEN CARD at card={self.card_indices[card_idx]}")
-                        while self.tasks[card_idx].out_stream.space_avail >= card.chunk_size and self.running:
-                            #print(f"Polling socket of card {card_idx}")
-                            if not self._write_chunk_to_device(card_idx):
-                                # No more data available from manager, break inner loop
-                                break
-                    else:
-                        # In test mode, simulate writing at the expected rate
-                        time.sleep(poll_interval)
-                        self._write_chunk_to_device(card_idx)
-                
-            except KeyboardInterrupt:
-                print(f"Writer {self.writer_id}: Stopped by user interrupt.")
-                self.running = False
-                break
-            except Exception as e:
-                print(f"Writer {self.writer_id}: Error in polling loop: {e}")
-                self.running = False
-                break
+            for card_idx in self.active_cards:
+                # Check if there's enough space in the buffer for a chunk
+                if not TEST_MODE:
+                    card = self.cards[card_idx]
+                    
+                    # Debug: catch underrun digital cards that are not reporting
+                    if self.tasks[card_idx].out_stream.space_avail == 0:
+                        raise ValueError(f"BROKEN CARD at card={self.card_indices[card_idx]}")
+                    
+                    # Keep filling the buffer while there's space - be more aggressive
+                    while self.tasks[card_idx].out_stream.space_avail >= card.chunk_size and self.running:
+                        if not self._write_chunk_to_device(card_idx):
+                            # No more data available from manager, break inner loop
+                            break
+                else:
+                    # In test mode, simulate writing at the expected rate
+                    time.sleep(self.shortest_realtime_chunk_time)
+                    if not self._write_chunk_to_device(card_idx):
+                        # Broken in the testing mode, raise an error
+                        raise ValueError(f"chunk={self.last_written_chunk_indices[card_idx]+1} was not ready at card={self.card_indices[card_idx]}")
 
     def _write_chunk_to_device(self, card_idx):
         """
@@ -197,10 +217,8 @@ class Writer(Process):
             # If we got a message from the manager, read it
             data = self.ready_sockets[card_idx].recv()
             chunk_idx, buf_idx, card_idx_recv = self.READY_STRUCT.unpack(data)
-            print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
+            #print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
         else:
-            print(f"Chunk at card={self.card_indices[card_idx]} was not ready.")
-            # No data ready, just return without error in polling mode
             return False
         
         if chunk_idx == -1:
@@ -250,6 +268,11 @@ class Writer(Process):
 
         # Report back that the buffer slot is free
         self.report_sockets[card_idx].send(self.REPORT_STRUCT.pack(chunk_idx, buf_idx, card_idx_recv))
+
+        # If the last chunk was written, remove the card from the active cards
+        if chunk_idx == self.num_chunks_to_write[card_idx]-1:
+            print(f"Writer {self.writer_id}: Finished writing card={self.card_indices[card_idx]}.")
+            self.active_cards.remove(card_idx)
         
         # Return True to indicate successful write
         return True
@@ -339,10 +362,10 @@ class Writer(Process):
         """
         realtime_timeout = self.timeout
 
-        # Set longer timeout for initial buffer loading (5 seconds)
-        self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000)
+        # Set longer timeout for initial buffer loading (5 seconds default)
+        self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000) # Convert to milliseconds
 
-        print(f"Writer {self.writer_id}: Preloading buffer for card {card_idx} with {self.outbuf_num_chunks} chunks...")
+        print(f"Writer {self.writer_id}: Starting to fill buffer of {self.outbuf_num_chunks} chunks for card={self.card_indices[card_idx]}.")
         
         # Preload the buffer
         chunks_loaded = 0
@@ -353,7 +376,10 @@ class Writer(Process):
                 print(f"Writer {self.writer_id}: Warning - Only loaded {chunks_loaded}/{self.outbuf_num_chunks} chunks during initialization")
                 break
         
-        print(f"Writer {self.writer_id}: Successfully preloaded {chunks_loaded} chunks for card {card_idx}")
+        print(f"Writer {self.writer_id}: Successfully preloaded {chunks_loaded} chunks for card={self.card_indices[card_idx]}.")
+
+        # Mark the card as initialized
+        self.init_card_flags[self.card_indices[card_idx]] = True
 
         # Reset the timeout to the original value
         self.timeout = realtime_timeout

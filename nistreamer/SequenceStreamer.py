@@ -198,10 +198,15 @@ class SequenceStreamer:
         for card in self.cards:
             shm_size = self.pool_size * card.num_channels() * card.chunk_size * np.dtype(bool if card.is_digital else np.float64).itemsize
 
-            # Create shared memory segment
+            # Create shared memory segment for waveforms
             self.shms.append(multiprocessing.shared_memory.SharedMemory(create=True, size=shm_size, name=card.shm_name))
 
             print(f"Shared memory segment '{card.shm_name}' created with size {shm_size} bytes: ({self.pool_size}x {card.chunk_size} samples for {card.num_channels()} channels).")
+
+        # Create shared memory segment for card initialization flags and set them all to False
+        self.shm_init_card_flags = multiprocessing.shared_memory.SharedMemory(create=True, size=len(self.cards) * np.dtype(bool).itemsize, name="nistreamer_init_card_flags")
+        init_card_buf = np.ndarray(len(self.cards), dtype=bool, buffer=self.shm_init_card_flags.buf)
+        init_card_buf.fill(False)
 
     def _precompute_chunk_queue(self):
         """
@@ -261,6 +266,7 @@ class SequenceStreamer:
                     pool_size=self.pool_size,
                     ready_ports=[self._get_port(self.writer_ready_sockets[i]) for i in card_indices],
                     report_ports=[self._get_port(self.writer_report_sockets[i]) for i in card_indices],
+                    num_all_cards=len(self.cards),
                 )
                 writer.daemon = True
                 writer.start()
@@ -428,6 +434,12 @@ class SequenceStreamer:
                 for shm in self.shms:
                     shm.close()
                     shm.unlink()
+            except FileNotFoundError:
+                pass
+
+            try:
+                self.shm_init_card_flags.close()
+                self.shm_init_card_flags.unlink()
             except FileNotFoundError:
                 pass
 
