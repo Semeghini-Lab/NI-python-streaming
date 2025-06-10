@@ -238,7 +238,7 @@ def create_stress_test(scale="medium"):
     print(f"Total channels: {sum(len(card.sequences) for card in cards)}")
     
     for i, card in enumerate(cards):
-        card_type = "Analog" if not card.sequences[0].__class__.__name__.startswith('DO') else "Digital"
+        card_type = "analog" if card.is_digital else "digital"
         print(f"  Card {i+1} ({card.device_name}): {len(card.sequences)} {card_type.lower()} channels")
     
     # Compile all cards
