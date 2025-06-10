@@ -238,7 +238,7 @@ class DOSequence(Sequence):
         super().__init__(channel_id, sample_rate, default_value, channel_name)
 
         if sample_rate != int(10e6):
-            raise ValueError("Digital channels need a 10 MHz sample rate")
+            raise ValueError(f"Digital channel {self} needs a 10 MHz sample rate, got {sample_rate/1e6} MHz.")
 
 
 if __name__ == "__main__":
