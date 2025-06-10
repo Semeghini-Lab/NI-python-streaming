@@ -40,7 +40,7 @@ class Writer(Process):
             pool_size: int,  # Size of the memory pool for calculations
             ready_ports: list[int],  # Ports for receiving ready signals
             report_ports: list[int],  # Ports for sending reports
-            timeout: float = 100*1e-6,  # Grace period after next chunk is expected (in seconds)
+            timeout: float = 0.0,  # Grace period after next chunk is expected (in seconds)
     ) -> None:
         super().__init__(name="Writer")
         self.writer_id = writer_id
@@ -48,8 +48,7 @@ class Writer(Process):
         self.card_indices = card_indices
         self.outbuf_num_chunks = outbuf_num_chunks
         self.pool_size = pool_size
-        # Fix timeout logic: use a minimum of 10ms for polling mode, but convert to milliseconds  
-        self.timeout = max(10, int(timeout * 1000))  # Always at least 10ms
+        self.timeout = int(timeout)
 
         # Store ports
         self.ready_ports = ready_ports
@@ -129,7 +128,7 @@ class Writer(Process):
             # Start the tasks in order that ensures trigger is armed
             if not TEST_MODE:
                 for card_idx in reversed(range(len(self.cards))):
-                    print(f"Worker {self.writer_id}: starting card={self.card_indices[card_idx]}")
+                    print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}")
                     self.tasks[card_idx].start()
 
             # Start polling loop instead of using callbacks
@@ -155,34 +154,24 @@ class Writer(Process):
         
         while self.running:
             try:
-                wrote_any_data = False
                 for card_idx in range(len(self.cards)):
                     # Check if there's enough space in the buffer for a chunk
                     if not TEST_MODE:
                         card = self.cards[card_idx]
-                        space_available = self.tasks[card_idx].out_stream.space_avail
                         
                         # Keep filling the buffer while there's space - be more aggressive
-                        while space_available >= card.chunk_size and self.running:
-                            if self._write_chunk_to_device(card_idx):
-                                wrote_any_data = True
-                                # Check space again after writing
-                                space_available = self.tasks[card_idx].out_stream.space_avail
-                            else:
+                        print(f"Avail space card={self.card_indices[card_idx]}={self.tasks[card_idx].out_stream.space_avail}")
+                        if self.tasks[card_idx].out_stream.space_avail == 0:
+                            raise ValueError(f"BROKEN CARD at card={self.card_indices[card_idx]}")
+                        while self.tasks[card_idx].out_stream.space_avail >= card.chunk_size and self.running:
+                            #print(f"Polling socket of card {card_idx}")
+                            if not self._write_chunk_to_device(card_idx):
                                 # No more data available from manager, break inner loop
                                 break
-                        
-                        # Debug: warn if buffer space is getting low
-                        if space_available < card.chunk_size * 2:  # Less than 2 chunks of space
-                            print(f"Writer {self.writer_id}: Warning - Low buffer space: {space_available} samples (need {card.chunk_size})")
                     else:
                         # In test mode, simulate writing at the expected rate
-                        if self._write_chunk_to_device(card_idx):
-                            wrote_any_data = True
-                
-                # Only sleep if we didn't write any data to avoid unnecessary delays
-                if not wrote_any_data:
-                    time.sleep(poll_interval)
+                        time.sleep(poll_interval)
+                        self._write_chunk_to_device(card_idx)
                 
             except KeyboardInterrupt:
                 print(f"Writer {self.writer_id}: Stopped by user interrupt.")
@@ -209,8 +198,9 @@ class Writer(Process):
             # If we got a message from the manager, read it
             data = self.ready_sockets[card_idx].recv()
             chunk_idx, buf_idx, card_idx_recv = self.READY_STRUCT.unpack(data)
-            #print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
+            print(f"Writer {self.writer_id}: Received ready signal for chunk {chunk_idx} in slot {buf_idx} at card {card_idx_recv}.")
         else:
+            print(f"Chunk at card={self.card_indices[card_idx]} was not ready.")
             # No data ready, just return without error in polling mode
             return False
         
@@ -247,7 +237,7 @@ class Writer(Process):
                     digital_data = self.buffers[card_idx][buf_idx]
                     # For single digital channel, convert from (1, samples) to (samples,)
                     if digital_data.shape[0] == 1:
-                        digital_data = digital_data.squeeze(axis=0)  # Remove the first dimension
+                       digital_data = digital_data.squeeze(axis=0)  # Remove the first dimension
                     self.tasks[card_idx].write(digital_data)
                 else:
                     # Use standard write method for analog cards
