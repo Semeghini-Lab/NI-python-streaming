@@ -4,6 +4,7 @@ import time
 
 from nistreamer.NICard import NICard
 from nistreamer.Sequences import AOSequence, DOSequence
+from nistreamer.SequenceStreamer import SequenceStreamer
 
 class Experiment:
     def __init__(self, inherit_timings_from_primary=True):
@@ -14,6 +15,15 @@ class Experiment:
         self.cards = {}
         # Primary card object
         self.primary_card = None
+
+        # Compile variables
+        self.total_time = None
+        self.is_compiled = False
+
+        # Streamer variables, not set by default
+        self.num_workers = None
+        self.num_writers = None
+        self.pool_size = None
 
     def add_card(self, name, sample_rate, primary=False, trigger_source=None, clock_source=None):
         """Creates and adds a new NICard at a given sample rate.
@@ -78,6 +88,10 @@ class Experiment:
             channel_name=name if name else f"{card_name}_ao{channel_id}",
             default_value=default_value,
         )
+
+        if self.is_compiled:    
+            print("Warning: adding a new sequence after compilation will revoke the compilation status.")
+            self.is_compiled = False
         
         self.cards[card_name].add_sequence(seq)
 
@@ -98,6 +112,10 @@ class Experiment:
             channel_name=name if name else f"{card_name}_do{port_id}_{line_id}",
             default_value=default_value,
         )
+
+        if self.is_compiled:
+            print("Warning: adding a new sequence after compilation will revoke the compilation status.")
+            self.is_compiled = False
         
         self.cards[card_name].add_sequence(seq)
 
@@ -129,6 +147,38 @@ class Experiment:
             card.compile(chunk_size=chunk_size, external_stop_time=total_time)
 
         print(f" done in {(time.time() - compile_time)*1e3:.3f} ms.")
+
+        self.is_compiled = True
+
+    def create_streamer(self, num_workers=None, num_writers=None, pool_size=None):
+        """Create a streamer object."""
+        if num_workers is None:
+            num_workers = self.num_workers
+        if num_writers is None:
+            num_writers = self.num_writers
+        if pool_size is None:
+            pool_size = self.pool_size
+        
+        # Check that necessary variables are set
+        if num_workers is None or num_writers is None or pool_size is None:
+            raise ValueError("Number of workers, writers, and pool size must be set.")
+        
+        # Make sure the experiment is compiled
+        if not self.is_compiled:
+            raise ValueError("Experiment is not compiled. Please compile the experiment before creating a streamer.")
+        
+        # Create the streamer
+        streamer = SequenceStreamer(
+            num_workers=num_workers,
+            num_writers=num_writers,
+            pool_size=pool_size,
+            cards=self.get_cards(),
+        )
+        return streamer
+
+    def run(self):
+        streamer = self.create_streamer()
+        streamer.run()
 
     def get_cards(self):
         """Return a list of all cards, with the primary card first."""
