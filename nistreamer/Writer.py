@@ -160,7 +160,6 @@ class Writer(Process):
                         card = self.cards[card_idx]
                         
                         # Keep filling the buffer while there's space - be more aggressive
-                        print(f"Avail space card={self.card_indices[card_idx]}={self.tasks[card_idx].out_stream.space_avail}")
                         if self.tasks[card_idx].out_stream.space_avail == 0:
                             raise ValueError(f"BROKEN CARD at card={self.card_indices[card_idx]}")
                         while self.tasks[card_idx].out_stream.space_avail >= card.chunk_size and self.running:
