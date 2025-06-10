@@ -14,6 +14,7 @@ class NICard:
         device_name: str,  # e.g., "PXI1Slot3"
         sample_rate: int,
         sequences: Optional[List[Sequence]] = None,
+        is_digital: bool = None,
         trigger_source: str = None,
         clock_source: str = None,
         is_primary: bool = False
@@ -38,6 +39,9 @@ class NICard:
         # Whether the card is the primary card
         self.is_primary = is_primary
 
+        # Whether the card is digital
+        self.is_digital = is_digital
+
         # Placeholder for channel IDs
         self.channel_ids = set()
 
@@ -54,6 +58,7 @@ class NICard:
     def _validate_sequences(self):
         # Make sure all the channel IDs from the sequences are unique and print the repeated ones.
         self.channel_ids, counts = np.unique([seq.channel_id for seq in self.sequences], return_counts=True)
+        self.channel_ids = set(self.channel_ids)
         if len(self.channel_ids) != len(self.sequences):
             raise ValueError(f"Reused channels found: {list(self.channel_ids[counts > 1])}")
         
@@ -61,12 +66,13 @@ class NICard:
         if not np.all(np.array([seq.sample_rate for seq in self.sequences]) == self.sample_rate):
             raise ValueError(f"Sequences do not match the card sample rate")
         
-        # If there are sequences, infer whether the card is analog or digital
+        # If there are sequences, make sure the analog/digital mode is consistent
         if len(self.sequences):
-            self.is_digital = isinstance(self.sequences[0], DOSequence)
+            if self.is_digital is None:
+                self.is_digital = isinstance(self.sequences[0], DOSequence)
 
             # Ensure all sequences are of the same type
-            mode_agreement = [isinstance(seq, DOSequence if self.is_digital else AOSequence) for seq in self.sequences]
+            mode_agreement = [isinstance(seq, DOSequence if self.is_digital else AOSequence) for seq in self.sequences] # TODO: this is not correct, we need to check the sequence type
             if not np.all(mode_agreement):
                 raise ValueError(f"Card {self.device_name} is {'digital' if self.is_digital else 'analog'} but some sequences are not ({[self.sequences[i] for i in np.where(~np.array(mode_agreement))[0]]})")
 
@@ -80,12 +86,26 @@ class NICard:
         if sequence.channel_id in self.channel_ids:
             raise ValueError(f"Channel ID {sequence.channel_id} already exists")
         
+        # If the card type is not set, set it to the sequence type
+        if self.is_digital is None:
+            self.is_digital = isinstance(sequence, DOSequence)
+        
         # Make sure the sequence is of the same type as the card
         if isinstance(sequence, DOSequence) != self.is_digital:
             raise ValueError(f"Sequence {sequence} is {'digital' if isinstance(sequence, DOSequence) else 'analog'} but card {self.device_name} is {'digital' if self.is_digital else 'analog'}")
         
         self.sequences.append(sequence)
         self.channel_ids.add(sequence.channel_id)
+
+    def set_digital(self, is_digital: bool, raise_error: bool = True):
+        """Set the card to digital mode."""
+        if self.is_digital is not None:
+            if raise_error:
+                raise ValueError(f"Card {self.device_name} is already {'digital' if self.is_digital else 'analog'}, cannot be changed.")
+            else:
+                return
+        else:
+            print(f"Card {self.device_name} is now set to {'digital' if is_digital else 'analog'}.")
 
     def compile(self, chunk_size: int, external_stop_time: float = None):
         """
@@ -128,3 +148,9 @@ class NICard:
             raise ValueError(f"Sequences are not compiled. Run NICard.compile() first.")
         
         return self.sequences
+    
+    def __str__(self):
+        return f"NICard(device_name={self.device_name}, sample_rate={self.sample_rate}, is_digital={self.is_digital}, trigger_source={self.trigger_source}, clock_source={self.clock_source}, is_primary={self.is_primary})"
+    
+    def __repr__(self):
+        return str(self)
