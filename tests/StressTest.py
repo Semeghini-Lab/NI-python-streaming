@@ -138,8 +138,8 @@ def create_stress_test(scale="medium"):
     # Configuration
     analog_sample_rate = 400_000  
     digital_sample_rate = 10_000_000  # 10 MHz for digital
-    total_duration = 60.0  # 1 minute
-    chunk_size = 65536
+    total_duration = 10.0  # 1 minute
+    chunk_size = 65536#*4
     
     # Scale configuration
     if scale == "small":
@@ -255,9 +255,9 @@ def create_stress_test(scale="medium"):
     try:
         with SequenceStreamer(
             cards=cards,
-            num_workers=2,  # Use more workers for stress test
-            num_writers=1,  # Use more writers for stress test
-            pool_size=8,   # Larger pool size for stress test
+            num_workers=4,  # Use more workers for stress test
+            num_writers=4,  # Use more writers for stress test
+            pool_size=16,   # Larger pool size for stress test
         ) as streamer:
             streamer.start()
             
