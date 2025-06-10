@@ -295,6 +295,7 @@ if __name__ == "__main__":
     seq.const(1.0, 1.0, value=5.0) 
     seq.linramp(3.0, 0.5, start=0, end=10) 
     seq.sine(6.0, 0.75, freq=1, amp=2, phase=0)
+    seq.rampto(7.0, 0.5, value=-8)
     
     print(f"Before compilation - {len(seq.instructions)} instructions:")
     for i, instruction in enumerate(seq.instructions):
