@@ -105,7 +105,6 @@ class Sequence:
         if not isinstance(num_chunks, int):
             raise ValueError(f"Number of chunks must be an integer, got {num_chunks}")
 
-        
         # if there are no instructions, fill the entire sequence with the default value
         if not self.instructions:
             default_instruction = Instruction(
@@ -173,6 +172,8 @@ class Sequence:
                 end_sample=stop_sample
             )
             filled_instructions.append(final_gap_instruction)
+        else:
+            raise ValueError(f"Sequence {self} ({current_sample/self.sample_rate}s) is longer than the external sequence length of {stop_sample/self.sample_rate}s.")
         
         self.instructions = filled_instructions
         self.final_sample = stop_sample

@@ -122,7 +122,7 @@ class NICard:
         # Compile the sequences
         if self.sequences:
              # Calculate the max stop sample for analog output
-            max_stop_sample = max([max([ins.end_sample for ins in seq.instructions]) for seq in self.sequences])
+            max_stop_sample = max([max([ins.end_sample for ins in seq.instructions]) if seq.instructions else 0 for seq in self.sequences])
             max_stop_time = max_stop_sample / self.sample_rate
             if external_stop_time:
                 if external_stop_time < max_stop_time:
@@ -133,7 +133,7 @@ class NICard:
             for seq in self.sequences:
                 seq.compile(chunk_size, num_chunks)
         else:
-            self.num_chunks = 0
+            raise NotImplementedError(f"Compiling a card ({self.device_name}) with no sequences is not supported.")
 
         # Save chunk sizes to mark that the sequences are compiled
         self.chunk_size = chunk_size
