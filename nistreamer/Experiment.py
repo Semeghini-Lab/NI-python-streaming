@@ -7,9 +7,12 @@ from nistreamer.Sequences import AOSequence, DOSequence
 from nistreamer.SequenceStreamer import SequenceStreamer
 
 class Experiment:
-    def __init__(self, inherit_timings_from_primary=True):
+    def __init__(self, inherit_timings_from_primary=True, add_channels_to_namespace=True):
         # Flag for whether to inherit timings from the primary card
         self.inherit_timings_from_primary = inherit_timings_from_primary
+
+        # Flag for whether to add channels to the namespace
+        self.add_channels_to_namespace = add_channels_to_namespace
 
         # Dictionary of cards by name
         self.cards = {}
@@ -76,46 +79,72 @@ class Experiment:
                 """TODO: add support for non-primary cards with no trigger or clock source"""
                 pass
 
-    def add_ao_channel(self, card_name, channel_id, name=None, default_value=0.0):
+    def add_ao_channel(self, card_name: str, channel_id: int, name: str = None, default_value: float = 0.0):
         """Add an analog output channel to a card."""
         # Make sure the card exists
         if card_name not in self.cards:
             raise ValueError(f"Card {card_name} not found.")
         
+        # Make sure the channel id is an integer
+        if not isinstance(channel_id, int):
+            raise ValueError(f"Channel id must be an integer, got {type(channel_id)}.")
+        
+        # Create the sequence
         seq = AOSequence(
-            channel_id=channel_id,
+            channel_id=f"ao{channel_id}",
             sample_rate=self.cards[card_name].sample_rate,
             channel_name=name if name else f"{card_name}_ao{channel_id}",
             default_value=default_value,
         )
 
+        # Undo the compilation status if a new sequence is added
         if self.is_compiled:    
             print("Warning: adding a new sequence after compilation will revoke the compilation status.")
             self.is_compiled = False
+
+        # Add channel to namespace
+        if self.add_channels_to_namespace:
+            if hasattr(self, name):
+                raise ValueError(f"Channel {name} already exists in the namespace.")
+            else:
+                setattr(self, name, seq)
         
         self.cards[card_name].add_sequence(seq)
 
         return seq
 
-    def add_do_channel(self, card_name, port_id, line_id, name=None, default_value=0):
+    def add_do_channel(self, card_name: str, port_id: int, line_id: int, name: str = None, default_value: int = 0):
         # Make sure the default value is an integer or a boolean
         if not isinstance(default_value, (int, bool)):
             raise ValueError(f"Default value must be an integer or a boolean, got {type(default_value)}.")
+        
+        # Make sure the port and line ids are integers
+        if not isinstance(port_id, int) or not isinstance(line_id, int):
+            raise ValueError(f"Port and line ids must be integers, got {type(port_id)} and {type(line_id)}.")
         
         # Make sure the card exists
         if card_name not in self.cards:
             raise ValueError(f"Card {card_name} not found.")
         
+        # Create the sequence
         seq = DOSequence(
-            channel_id=f"{port_id}/{line_id}",
+            channel_id=f"port{port_id}/line{line_id}",
             sample_rate=self.cards[card_name].sample_rate,
             channel_name=name if name else f"{card_name}_do{port_id}_{line_id}",
             default_value=default_value,
         )
 
+        # Undo the compilation status if a new sequence is added
         if self.is_compiled:
             print("Warning: adding a new sequence after compilation will revoke the compilation status.")
             self.is_compiled = False
+
+        # Add channel to namespace
+        if self.add_channels_to_namespace:
+            if hasattr(self, name):
+                raise ValueError(f"Channel {name} already exists in the namespace.")
+            else:
+                setattr(self, name, seq)
         
         self.cards[card_name].add_sequence(seq)
 
