@@ -21,3 +21,7 @@ def propagate_start_value(func):
 def propagate_duration(func):
     func._propagate_duration = True
     return func
+
+def instantaneous(func):
+    func._instantaneous = True
+    return func
