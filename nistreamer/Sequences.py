@@ -64,7 +64,7 @@ class Sequence:
             # Check if the proper parameters are provided
             for p_id, p_name in enumerate(param_names):
                 if p_name not in kwargs:
-                    if not isinstance(param_defaults[p_id], inspect._empty):
+                    if param_defaults[p_id] is not inspect._empty:
                         print(f"Using default value {param_defaults[p_id]} for {p_name} in {func_name}")
                         kwargs[p_name] = param_defaults[p_id]
                     else:
