@@ -4,6 +4,7 @@ import nistreamer.Commands as Commands
 from nistreamer.Commands import *
 from nistreamer.Instruction import *
 import numpy as np
+import bisect
 
 class Sequence:
     '''
@@ -259,6 +260,43 @@ class Sequence:
         else:
             return None
 
+    def __call__(self, t):
+        """
+        Make the sequence object callable. This could be used to evaluate
+        the sequence at a specific time point.
+        
+        Args:
+            t: Time value
+            
+        Returns:
+            Computed channel value at time t
+        """
+        if not self.is_compiled:
+            raise RuntimeError("Sequence must be compiled before evaluating.")
+        
+        # Convert time to sample index and round to nearest integer
+        sample_idx = round(t * self.sample_rate)
+
+        # If the time is outside the sequence, raise an error
+        if sample_idx < 0 or sample_idx >= self.final_sample:
+            raise ValueError(f"Sequence {self} encountered an error while evaluating at time {t}.")
+        
+        # Find which instruction contains this sample index
+        ins_idx = bisect.bisect_right(self.instructions, sample_idx, key=lambda x: x.start_sample)-1
+        if ins_idx < 0:
+            raise ValueError(f"Sequence {self} encountered an error while evaluating at time {t}.")
+        
+        # Calculate relative time within this instruction
+        t_ins = (sample_idx - self.instructions[ins_idx].start_sample) / self.sample_rate
+
+        # Evaluate the instruction function at this time
+        result = self.instructions[ins_idx].func(t_ins)
+        
+        # Convert numpy array to scalar if needed
+        if hasattr(result, 'item'):
+            return result.item()
+        else:
+            return result
 
 class AOSequence(Sequence):
     '''
