@@ -1,5 +1,5 @@
 import numpy as np
-from nistreamer.Tags import analog_output, digital_output, propagate_start_value, propagate_duration
+from nistreamer.Tags import *
 
 '''
 Analog output commands. All function must take the positional argument t [ndarray]
@@ -33,11 +33,13 @@ def rampto(t, value, start=None, cmd_duration=None):
 # ====== DIGITAL OUTPUT COMMANDS ======
 
 @digital_output
+@instantaneous
 def high(t):
     """Digital output high."""
     return np.ones_like(t)
 
 @digital_output
+@instantaneous
 def low(t):
     """Digital output low."""
     return np.zeros_like(t)

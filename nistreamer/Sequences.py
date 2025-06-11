@@ -29,6 +29,14 @@ class Sequence:
                 # If there is no _propagate_duration attribute, make it False
                 if not hasattr(obj, '_propagate_duration'):
                     obj._propagate_duration = False
+
+                # If there is no _instantaneous attribute, make it False
+                if not hasattr(obj, '_instantaneous'):
+                    obj._instantaneous = False
+                else:
+                    # Make sure that all instantaneous commands are digital
+                    if obj._instantaneous and obj._category != 'digital_output':
+                        raise ValueError(f"Instantaneous command {name} is not a digital output.")
                 
                 # Extract the function parameters and their default values
                 params = list(filter(lambda x: x[0] != 't', inspect.signature(obj).parameters.items()))
@@ -48,7 +56,7 @@ class Sequence:
         param_names = [param[0] for param in params]
         param_defaults = [param[1].default for param in params]
 
-        def method(self, t, duration, **kwargs):
+        def method(self, t, duration=None, **kwargs):
             # Do not allow instructions to be added if the sequence has been compiled
             if self.is_compiled:
                 raise RuntimeError(f"Cannot add {func_name} instruction: sequence is already compiled. Create a new sequence or clear existing instructions.")
@@ -57,21 +65,30 @@ class Sequence:
             if t < 0:
                 raise ValueError(f"Start time must be >= 0, got {t} for {func_name}")
             
+            # If duration is None, make sure that the command is instantaneous
+            if duration is None:
+                if not command_func._instantaneous:
+                    raise ValueError(f"Command {func_name} is not instantaneous, but duration is None.")
+                duration = 1.0/self.sample_rate
+            
             # Check if the duration is more than a single sample
-            if duration <= 1.0/self.sample_rate:
+            if duration < 1.0/self.sample_rate:
                 raise ValueError(f"Duration must be > 1/sample_rate ({1.0/self.sample_rate} s), got {duration} for {func_name}")
             
             # Check if the proper parameters are provided
             for p_id, p_name in enumerate(param_names):
                 if p_name not in kwargs:
                     if param_defaults[p_id] is not inspect._empty:
-                        print(f"Using default value {param_defaults[p_id]} for {p_name} in {func_name}")
                         kwargs[p_name] = param_defaults[p_id]
                     else:
                         raise ValueError(f"Missing required parameter '{p_name}' for {func_name}")
             # Convert from real time to sample time
             start_sample = round(t * self.sample_rate)
             end_sample = start_sample + round(duration * self.sample_rate) # end sample is exclusive
+
+            # Ensure that instantaneous commands are exactly 1 sample long
+            if command_func._instantaneous and end_sample - start_sample != 1:
+                raise ValueError(f"Instantaneous command {func_name} must be exactly 1 sample long, got {end_sample - start_sample} samples.")
             
             # Create and append instruction
             instruction = Instruction(func=partial(command_func, **kwargs), start_sample=start_sample, end_sample=end_sample)
