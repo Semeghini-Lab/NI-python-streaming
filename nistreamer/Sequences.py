@@ -48,7 +48,7 @@ class Sequence:
         param_names = [param[0] for param in params]
         param_defaults = [param[1].default for param in params]
 
-        def method(self, t, cmd_duration, **kwargs):
+        def method(self, t, duration, **kwargs):
             # Do not allow instructions to be added if the sequence has been compiled
             if self.is_compiled:
                 raise RuntimeError(f"Cannot add {func_name} instruction: sequence is already compiled. Create a new sequence or clear existing instructions.")
@@ -58,8 +58,8 @@ class Sequence:
                 raise ValueError(f"Start time must be >= 0, got {t} for {func_name}")
             
             # Check if the duration is more than a single sample
-            if cmd_duration <= 1.0/self.sample_rate:
-                raise ValueError(f"Duration must be > 1/sample_rate ({1.0/self.sample_rate} s), got {cmd_duration} for {func_name}")
+            if duration <= 1.0/self.sample_rate:
+                raise ValueError(f"Duration must be > 1/sample_rate ({1.0/self.sample_rate} s), got {duration} for {func_name}")
             
             # Check if the proper parameters are provided
             for p_id, p_name in enumerate(param_names):
@@ -71,7 +71,7 @@ class Sequence:
                         raise ValueError(f"Missing required parameter '{p_name}' for {func_name}")
             # Convert from real time to sample time
             start_sample = round(t * self.sample_rate)
-            end_sample = start_sample + round(cmd_duration * self.sample_rate) # end sample is exclusive
+            end_sample = start_sample + round(duration * self.sample_rate) # end sample is exclusive
             
             # Create and append instruction
             instruction = Instruction(func=partial(command_func, **kwargs), start_sample=start_sample, end_sample=end_sample)
@@ -121,11 +121,11 @@ class Sequence:
         # Check if the instruction needs to propagate the duration
         if inst.func.func._propagate_duration:
             # Look for the 'duration' keyword in the parameters and overlap it with the end value
-            if 'duration' not in inst.func.keywords:
-                raise ValueError(f"Instruction {inst} needs to propagate the duration, but 'duration' is not in the parameters.")
+            if 'cmd_duration' not in inst.func.keywords:
+                raise ValueError(f"Instruction {inst} needs to propagate the duration, but 'cmd_duration' is not in the parameters.")
             
             # Update the duration keyword to the duration of the instruction
-            inst.func.keywords['duration'] = duration
+            inst.func.keywords['cmd_duration'] = duration
 
         # Evaluate the instruction at the end of the current instruction
         last_value = inst.func.func(np.atleast_1d(duration), **inst.func.keywords)[0]

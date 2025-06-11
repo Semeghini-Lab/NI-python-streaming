@@ -21,14 +21,14 @@ def sine(t, freq, amp, phase):
 
 @analog_output
 @propagate_duration
-def linramp(t, start, end, duration=None):
-    return start + (end-start) * t / duration
+def linramp(t, start, end, cmd_duration=None):
+    return start + (end-start) * t / cmd_duration
 
 @analog_output
 @propagate_duration
 @propagate_start_value
-def rampto(t, value, start=None, duration=None):
-    return start + (value-start) * t / duration
+def rampto(t, value, start=None, cmd_duration=None):
+    return start + (value-start) * t / cmd_duration
 
 # ====== DIGITAL OUTPUT COMMANDS ======
 
