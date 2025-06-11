@@ -158,7 +158,7 @@ class Writer(Process):
             # Start the tasks in order that ensures trigger is armed
             if not TEST_MODE:
                 for card_idx in reversed(self.active_cards):
-                    print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}")
+                    print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}.")
                     self.tasks[card_idx].start()
 
             # Start polling loop instead of using callbacks
@@ -271,7 +271,7 @@ class Writer(Process):
 
         # If the last chunk was written, remove the card from the active cards
         if chunk_idx == self.num_chunks_to_write[card_idx]-1:
-            print(f"Writer {self.writer_id}: Finished writing card={self.card_indices[card_idx]}.")
+            print(f"Writer {self.writer_id}: finished writing card={self.card_indices[card_idx]}.")
             self.active_cards.remove(card_idx)
         
         # Return True to indicate successful write
@@ -365,7 +365,7 @@ class Writer(Process):
         # Set longer timeout for initial buffer loading (5 seconds default)
         self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000) # Convert to milliseconds
 
-        print(f"Writer {self.writer_id}: Starting to fill buffer of {self.outbuf_num_chunks} chunks for card={self.card_indices[card_idx]}.")
+        print(f"Writer {self.writer_id}: starting to fill buffer of {self.outbuf_num_chunks} chunks for card={self.card_indices[card_idx]}.")
         
         # Preload the buffer
         chunks_loaded = 0
@@ -373,10 +373,10 @@ class Writer(Process):
             if self._write_chunk_to_device(card_idx):
                 chunks_loaded += 1
             else:
-                print(f"Writer {self.writer_id}: Warning - Only loaded {chunks_loaded}/{self.outbuf_num_chunks} chunks during initialization")
+                print(f"Writer {self.writer_id}: warning - only loaded {chunks_loaded}/{self.outbuf_num_chunks} chunks during initialization")
                 break
         
-        print(f"Writer {self.writer_id}: Successfully preloaded {chunks_loaded} chunks for card={self.card_indices[card_idx]}.")
+        print(f"Writer {self.writer_id}: successfully preloaded {chunks_loaded} chunks for card={self.card_indices[card_idx]}.")
 
         # Mark the card as initialized
         self.init_card_flags[self.card_indices[card_idx]] = True

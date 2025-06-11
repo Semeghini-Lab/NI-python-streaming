@@ -86,7 +86,7 @@ class Worker(Process):
                 chunk_idx, buf_idx, card_idx, ch_start, ch_end = self.ASSIGN_STRUCT.unpack(data)
 
                 if chunk_idx == -1:
-                    print(f"Worker {self.worker_id} received stop message.")
+                    print(f"Worker {self.worker_id}: received stop message.")
                     break
 
                 # Start the timer for computation
