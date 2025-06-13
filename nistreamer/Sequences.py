@@ -176,6 +176,7 @@ class Sequence:
                 end_sample=self.sample_rate * chunk_size * num_chunks
             )
             self.instructions = [default_instruction]
+            self.final_sample = 0
             self.is_compiled = True
             return
             
