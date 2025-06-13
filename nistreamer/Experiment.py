@@ -178,6 +178,7 @@ class Experiment:
         print(f" done in {(time.time() - compile_time)*1e3:.3f} ms.")
 
         self.is_compiled = True
+        return total_time
 
     def create_streamer(self, num_workers=None, num_writers=None, pool_size=None):
         """Create a streamer object."""
