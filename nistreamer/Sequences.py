@@ -4,6 +4,7 @@ import nistreamer.Commands as Commands
 from nistreamer.Commands import *
 from nistreamer.Instruction import *
 import numpy as np
+import bisect
 
 class Sequence:
     '''
@@ -175,6 +176,7 @@ class Sequence:
                 end_sample=self.sample_rate * chunk_size * num_chunks
             )
             self.instructions = [default_instruction]
+            self.final_sample = 0
             self.is_compiled = True
             return
             
@@ -259,6 +261,43 @@ class Sequence:
         else:
             return None
 
+    def __call__(self, t):
+        """
+        Make the sequence object callable. This could be used to evaluate
+        the sequence at a specific time point.
+        
+        Args:
+            t: Time value
+            
+        Returns:
+            Computed channel value at time t
+        """
+        if not self.is_compiled:
+            raise RuntimeError("Sequence must be compiled before evaluating.")
+        
+        # Convert time to sample index and round to nearest integer
+        sample_idx = round(t * self.sample_rate)
+
+        # If the time is outside the sequence, raise an error
+        if sample_idx < 0 or sample_idx >= self.final_sample:
+            raise ValueError(f"Sequence {self} encountered an error while evaluating at time {t}.")
+        
+        # Find which instruction contains this sample index
+        ins_idx = bisect.bisect_right(self.instructions, sample_idx, key=lambda x: x.start_sample)-1
+        if ins_idx < 0:
+            raise ValueError(f"Sequence {self} encountered an error while evaluating at time {t}.")
+        
+        # Calculate relative time within this instruction
+        t_ins = (sample_idx - self.instructions[ins_idx].start_sample) / self.sample_rate
+
+        # Evaluate the instruction function at this time
+        result = self.instructions[ins_idx].func(t_ins)
+        
+        # Convert numpy array to scalar if needed
+        if hasattr(result, 'item'):
+            return result.item()
+        else:
+            return result
 
 class AOSequence(Sequence):
     '''
@@ -289,7 +328,7 @@ class DOSequence(Sequence):
     '''
     _command_category = 'digital_output'
 
-    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = ""):
+    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = "", on_state: bool = True):
         """
         Initialize a digital output sequence.
         
@@ -298,11 +337,27 @@ class DOSequence(Sequence):
             sample_rate (int): Sample rate in Hz
             default_value (int): Default output value (0 or 1)
             channel_name (str, optional): Name of the channel for operational use (e.g., "AOD TTL")
+            on_state (bool): If True, on() maps to high(), if False, on() maps to low()
         """
         super().__init__(channel_id, sample_rate, default_value, channel_name)
+        self.on_state = on_state
 
         if sample_rate != int(10e6):
             raise ValueError(f"Digital channel {self} needs a 10 MHz sample rate, got {sample_rate/1e6} MHz.")
+
+    def on(self, t, duration=None):
+        """Sets the digital output to the configured on state (high or low)."""
+        if self.on_state:
+            return self.high(t, duration)
+        else:
+            return self.low(t, duration)
+
+    def off(self, t, duration=None):
+        """Sets the digital output to the opposite of the configured on state."""
+        if self.on_state:
+            return self.low(t, duration)
+        else:
+            return self.high(t, duration)
 
 
 if __name__ == "__main__":

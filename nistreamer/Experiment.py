@@ -113,7 +113,7 @@ class Experiment:
 
         return seq
 
-    def add_do_channel(self, card_name: str, port_id: int, line_id: int, name: str = None, default_value: int = 0):
+    def add_do_channel(self, card_name: str, port_id: int, line_id: int, name: str = None, default_value: int = 0, on_state: bool = True):
         # Make sure the default value is an integer or a boolean
         if not isinstance(default_value, (int, bool)):
             raise ValueError(f"Default value must be an integer or a boolean, got {type(default_value)}.")
@@ -132,6 +132,7 @@ class Experiment:
             sample_rate=self.cards[card_name].sample_rate,
             channel_name=name if name else f"{card_name}_do{port_id}_{line_id}",
             default_value=default_value,
+            on_state=on_state,
         )
 
         # Undo the compilation status if a new sequence is added
@@ -178,6 +179,7 @@ class Experiment:
         print(f" done in {(time.time() - compile_time)*1e3:.3f} ms.")
 
         self.is_compiled = True
+        return total_time
 
     def create_streamer(self, num_workers=None, num_writers=None, pool_size=None):
         """Create a streamer object."""
