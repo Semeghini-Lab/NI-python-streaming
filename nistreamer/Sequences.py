@@ -168,24 +168,24 @@ class Sequence:
         if not isinstance(num_chunks, int):
             raise ValueError(f"Number of chunks must be an integer, got {num_chunks}")
 
+        # Calculate the final sample index
+        stop_sample = chunk_size * num_chunks
+
         # If there are no instructions, fill the entire sequence with the default value
         if not self.instructions:
             default_instruction = Instruction(
                 func=partial(const, value=self.default_value),
                 start_sample=0,
-                end_sample=self.sample_rate * chunk_size * num_chunks
+                end_sample= stop_sample
             )
             self.instructions = [default_instruction]
-            self.final_sample = 0
+            self.final_sample = stop_sample
             self.is_compiled = True
             return
             
         # Sort instructions by start sample
         self.instructions.sort(key=lambda x: x.start_sample)
 
-        # Calculate the final sample index
-        stop_sample = chunk_size * num_chunks
-        
         # Check that adjacent samples do not overlap, and fill gaps between instructions
         compiled_instructions = []
 
