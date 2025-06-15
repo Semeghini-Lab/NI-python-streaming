@@ -211,7 +211,13 @@ class Experiment:
 
     def run(self):
         streamer = self.create_streamer()
-        streamer.run()
+        streamer.start()
+
+    def save(self, filename):
+        """Save the experiment to a file."""
+        import pickle
+        with open(filename, "wb") as f:
+            pickle.dump(self, f)
 
     def get_cards(self):
         """Return a list of all cards, with the primary card first."""
