@@ -5,6 +5,7 @@ from nistreamer.Commands import *
 from nistreamer.Instruction import *
 import numpy as np
 import bisect
+from typing import Literal
 
 class Sequence:
     '''
@@ -328,7 +329,7 @@ class DOSequence(Sequence):
     '''
     _command_category = 'digital_output'
 
-    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = "", on_state: bool = True):
+    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = "", on_state: Literal['HIGH', 'LOW'] = 'HIGH'):
         """
         Initialize a digital output sequence.
         
@@ -340,7 +341,7 @@ class DOSequence(Sequence):
             on_state (bool): If True, on() maps to high(), if False, on() maps to low()
         """
         super().__init__(channel_id, sample_rate, default_value, channel_name)
-        self.on_state = on_state
+        self.on_state = (on_state == 'HIGH')
 
         if sample_rate != int(10e6):
             raise ValueError(f"Digital channel {self} needs a 10 MHz sample rate, got {sample_rate/1e6} MHz.")

@@ -39,7 +39,7 @@ class SequenceStreamer:
     ) -> None:
         self.cards = cards
         self.num_workers = num_workers
-        self.num_writers = min(len(cards), num_writers)
+        self.num_writers = num_writers
         self.pool_size = pool_size
 
         # Validate the vards
@@ -290,8 +290,7 @@ class SequenceStreamer:
         data = socket.recv()
         chunk_idx, buf_idx, card_idx, worker_id, compute_time = self.WORKER_DONE_STRUCT.unpack(data)
 
-        # if card_idx == 1:
-        #     print(f"[FINISHED CALC] card={card_idx} chunk={chunk_idx} slot={buf_idx} worker_id={worker_id} time={compute_time*1e3:.3f}ms.")
+        #print(f"[FINISHED CALC] card={card_idx} chunk={chunk_idx} slot={buf_idx} worker_id={worker_id}.")
 
         if chunk_idx not in self.chunks_being_processed[card_idx]:
             raise ValueError(f"Received done notification for an unexpected chunk {chunk_idx} at card {card_idx}.")
@@ -419,7 +418,7 @@ class SequenceStreamer:
             socket.send(self.WORKER_ASSIGN_STRUCT.pack(-1, -1, 0, 0, 0))
 
         # Wait for the full buffer to play (2x for safety)
-        time.sleep(2 * self.pool_size * max([card.chunk_size/card.sample_rate for card in self.cards])) # in seconds
+        time.sleep(1.2 * self.pool_size * max([card.chunk_size/card.sample_rate for card in self.cards])) # in seconds
 
         # Wait for the writer and workers to finish
         for writer in self.writers:
