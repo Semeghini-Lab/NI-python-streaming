@@ -97,9 +97,9 @@ def generate_random_digital_sequence(channel_id: str, sample_rate: int, total_du
     
     # Generate random high/low patterns
     while current_sample < total_samples:
-        # Random duration in samples (between 0.0001s and 0.5s worth of samples)
+        # Random duration in samples (between 0.0001s and 0.01s worth of samples)
         min_samples = max(1, int(0.0001 * sample_rate))  # 0.1ms minimum
-        max_samples = min(int(0.5 * sample_rate), total_samples - current_sample)  # 0.5s maximum
+        max_samples = min(int(0.01 * sample_rate), total_samples - current_sample)  # 10ms maximum
         
         if max_samples <= min_samples:
             # Not enough samples left for a meaningful instruction
@@ -112,9 +112,9 @@ def generate_random_digital_sequence(channel_id: str, sample_rate: int, total_du
         duration_time = duration_samples / sample_rate
         
         if current_state:
-            seq.high(start_time, duration_time)
+            seq.high(start_time)
         else:
-            seq.low(start_time, duration_time)
+            seq.low(start_time)
         
         current_sample += duration_samples
         
@@ -259,9 +259,9 @@ def create_stress_test(scale="medium"):
     try:
         with SequenceStreamer(
             cards=cards,
-            num_workers=4,  # Use more workers for stress test
+            num_workers=2,  # Use more workers for stress test
             num_writers=4,  # Use more writers for stress test
-            pool_size=16,   # Larger pool size for stress test
+            pool_size=8,   # Larger pool size for stress test
         ) as streamer:
             streamer.start()
             
