@@ -418,7 +418,7 @@ class SequenceStreamer:
             socket.send(self.WORKER_ASSIGN_STRUCT.pack(-1, -1, 0, 0, 0))
 
         # Wait for the full buffer to play (2x for safety)
-        time.sleep(2 * self.pool_size * max([card.chunk_size/card.sample_rate for card in self.cards])) # in seconds
+        time.sleep(1.2 * self.pool_size * max([card.chunk_size/card.sample_rate for card in self.cards])) # in seconds
 
         # Wait for the writer and workers to finish
         for writer in self.writers:

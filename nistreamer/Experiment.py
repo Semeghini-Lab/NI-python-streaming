@@ -79,7 +79,7 @@ class Experiment:
                 """TODO: add support for non-primary cards with no trigger or clock source"""
                 pass
 
-    def add_ao_channel(self, card_name: str, channel_id: int, name: str = None, default_value: float = 0.0):
+    def add_ao_channel(self, card_name: str, channel_id: int, name: str = None, default_value: float = 0.0, min_value: float = -10.0, max_value: float = 10.0):
         """Add an analog output channel to a card."""
         # Make sure the card exists
         if card_name not in self.cards:
@@ -95,6 +95,8 @@ class Experiment:
             sample_rate=self.cards[card_name].sample_rate,
             channel_name=name if name else f"{card_name}_ao{channel_id}",
             default_value=default_value,
+            min_value=min_value,
+            max_value=max_value,
         )
 
         # Undo the compilation status if a new sequence is added
@@ -151,7 +153,7 @@ class Experiment:
 
         return seq
 
-    def compile(self, chunk_size: int = 65536, total_time: float = None):
+    def compile(self, chunk_size: int = 524288, total_time: float = None):
         """Compile the experiment."""
         
         # If there is a primary card, make sure it has at least one channel defined

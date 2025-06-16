@@ -5,6 +5,7 @@ from nistreamer.Commands import *
 from nistreamer.Instruction import *
 import numpy as np
 import bisect
+from typing import Literal
 
 class Sequence:
     '''
@@ -184,24 +185,24 @@ class Sequence:
         if not isinstance(num_chunks, int):
             raise ValueError(f"Number of chunks must be an integer, got {num_chunks}")
 
+        # Calculate the final sample index
+        stop_sample = chunk_size * num_chunks
+
         # If there are no instructions, fill the entire sequence with the default value
         if not self.instructions:
             default_instruction = Instruction(
                 func=partial(const, value=self.default_value),
                 start_sample=0,
-                end_sample=self.sample_rate * chunk_size * num_chunks
+                end_sample= stop_sample
             )
             self.instructions = [default_instruction]
-            self.final_sample = 0
+            self.final_sample = stop_sample
             self.is_compiled = True
             return
             
         # Sort instructions by start sample
         self.instructions.sort(key=lambda x: x.start_sample)
 
-        # Calculate the final sample index
-        stop_sample = chunk_size * num_chunks
-        
         # Check that adjacent samples do not overlap, and fill gaps between instructions
         compiled_instructions = []
 
@@ -347,7 +348,7 @@ class DOSequence(Sequence):
     '''
     _command_category = 'digital_output'
 
-    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = "", on_state: bool = True):
+    def __init__(self, channel_id: str, sample_rate: int, default_value: int = 0, channel_name: str = "", on_state: Literal['HIGH', 'LOW'] = 'HIGH'):
         """
         Initialize a digital output sequence.
         
@@ -359,7 +360,7 @@ class DOSequence(Sequence):
             on_state (bool): If True, on() maps to high(), if False, on() maps to low()
         """
         super().__init__(channel_id, sample_rate, default_value, channel_name)
-        self.on_state = on_state
+        self.on_state = (on_state == 'HIGH')
 
         if sample_rate != int(10e6):
             raise ValueError(f"Digital channel {self} needs a 10 MHz sample rate, got {sample_rate/1e6} MHz.")
