@@ -12,8 +12,10 @@ The const function is mandatory.
 # ====== ANALOG OUTPUT COMMANDS ======
 
 @analog_output
-def const(t, value):
-    return np.full_like(t, value)
+@inplace
+def const(t, value, buf):
+    buf[:] = value
+    return None
 
 @analog_output
 def sine(t, freq, amp, phase):
@@ -34,15 +36,19 @@ def rampto(t, value, start=None, cmd_duration=None):
 
 @digital_output
 @instantaneous
-def high(t):
+@inplace
+def high(t, buf):
     """Digital output high."""
-    return np.ones_like(t)
+    buf[:] = 1
+    return None
 
 @digital_output
 @instantaneous
-def low(t):
+@inplace
+def low(t, buf):
     """Digital output low."""
-    return np.zeros_like(t)
+    buf[:] = 0
+    return None
 
 @digital_output
 def square(t, freq, duty_cycle=0.5, phase=0):
