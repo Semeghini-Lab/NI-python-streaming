@@ -392,7 +392,7 @@ class Writer(Process):
         try:
             # Wait for 2x the longest card buffer time
             print(f"Writer {self.writer_id}: Waiting for NI-DAQ task to finish...")
-            time.sleep(2.0 * self.longest_realtime_chunk_time * self.outbuf_num_chunks)
+            time.sleep(1.2 * self.longest_realtime_chunk_time * self.outbuf_num_chunks)
 
             # If we have a task, wait for it to finish
             if self.tasks:
