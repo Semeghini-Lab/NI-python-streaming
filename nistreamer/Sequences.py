@@ -31,6 +31,10 @@ class Sequence:
                 if not hasattr(obj, '_propagate_duration'):
                     obj._propagate_duration = False
 
+                # If there is no _inplace attribute, make it False
+                if not hasattr(obj, '_inplace'):
+                    obj._inplace = False
+
                 # If there is no _instantaneous attribute, make it False
                 if not hasattr(obj, '_instantaneous'):
                     obj._instantaneous = False
@@ -40,7 +44,10 @@ class Sequence:
                         raise ValueError(f"Instantaneous command {name} is not a digital output.")
                 
                 # Extract the function parameters and their default values
-                params = list(filter(lambda x: x[0] != 't', inspect.signature(obj).parameters.items()))
+                if obj._inplace:
+                    params = list(filter(lambda x: x[0] != 't' and x[0] != 'buf', inspect.signature(obj).parameters.items()))
+                else:
+                    params = list(filter(lambda x: x[0] != 't', inspect.signature(obj).parameters.items()))
 
                 # Create a method for the command
                 cls._create_class_method(name, obj, params)
@@ -92,7 +99,7 @@ class Sequence:
                 raise ValueError(f"Instantaneous command {func_name} must be exactly 1 sample long, got {end_sample - start_sample} samples.")
             
             # Create and append instruction
-            instruction = Instruction(func=partial(command_func, **kwargs), start_sample=start_sample, end_sample=end_sample)
+            instruction = Instruction(func=partial(command_func, **kwargs), start_sample=start_sample, end_sample=end_sample, inplace=command_func._inplace)
             self.instructions.append(instruction)
         
         # Add method to this class
@@ -146,8 +153,17 @@ class Sequence:
             inst.func.keywords['cmd_duration'] = duration
 
         # Evaluate the instruction at the end of the current instruction
-        last_value = inst.func.func(np.atleast_1d(duration), **inst.func.keywords)[0]
+        t = np.atleast_1d(duration)
+        if inst.inplace:
+            buf = np.zeros_like(t, dtype=self._buffer_dtype())
+            inst.func.func(t, **inst.func.keywords, buf=buf)
+            last_value = buf[0]
+        else:
+            last_value = inst.func.func(t, **inst.func.keywords)[0]
         return inst, last_value
+
+    def _buffer_dtype(self):
+        return np.float64 if isinstance(self, AOSequence) else bool
 
     def compile(self, chunk_size, num_chunks):
         """
@@ -195,7 +211,8 @@ class Sequence:
                 Instruction(
                     func=partial(const, value=self.default_value),
                     start_sample=0,
-                    end_sample=self.instructions[0].start_sample
+                    end_sample=self.instructions[0].start_sample,
+                    inplace=const._inplace
                 )
             )
 
@@ -219,7 +236,8 @@ class Sequence:
                         Instruction(
                             func=partial(const, value=last_value),
                             start_sample=current.end_sample,
-                            end_sample=next.start_sample
+                            end_sample=next.start_sample,
+                            inplace=const._inplace
                         )
                     )
 
@@ -234,7 +252,8 @@ class Sequence:
                 Instruction(
                     func=partial(const, value=last_value),
                     start_sample=last_inst_sample,
-                    end_sample=stop_sample
+                    end_sample=stop_sample,
+                    inplace=const._inplace
                 )
             )
         else:

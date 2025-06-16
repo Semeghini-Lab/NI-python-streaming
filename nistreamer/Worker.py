@@ -36,6 +36,7 @@ class Worker(Process):
         # Initialize the instruction sets for each channel for each card
         self.ins_set = [[ch.instructions for ch in card.sequences] for card in self.cards]
         self.ins_starts = [[[ins.start_sample for ins in ch.instructions] for ch in card.sequences] for card in self.cards]
+        self.ins_inplaces = [[[ins.inplace for ins in ch.instructions] for ch in card.sequences] for card in self.cards]
 
         # Extract the chunk size for each card
         self.chunk_sizes = [card.chunk_size for card in self.cards]
@@ -100,6 +101,7 @@ class Worker(Process):
                     # Get the instruction set for the card and channel
                     ins_set = self.ins_set[card_idx][ch]
                     ins_starts = self.ins_starts[card_idx][ch]
+                    ins_inplaces = self.ins_inplaces[card_idx][ch]
 
                     # Find the first instruction start time that crosses the chunk start boundary
                     ins_idx = bisect.bisect_right(ins_starts, chunk_start)-1
@@ -119,7 +121,15 @@ class Worker(Process):
                         t = np.arange(max(ins_start, chunk_start)-ins_start, min(ins_end, chunk_end)-ins_start) / self.sample_rates[card_idx]
 
                         # Write the data to the buffer
-                        self.buffers[card_idx][buf_idx, ch, in_chunk_pos:in_chunk_pos+len(t)] = func(t)
+                        if ins_inplaces[ins_idx]:
+                            #print(self.buffers[card_idx].itemsize)
+                            func(t, buf=np.ndarray(
+                                shape = (len(t),),
+                                dtype = self.buffers[card_idx].dtype,
+                                buffer = self.buffers[card_idx][buf_idx, ch, in_chunk_pos:in_chunk_pos+len(t)].data
+                            ))
+                        else:
+                            self.buffers[card_idx][buf_idx, ch, in_chunk_pos:in_chunk_pos+len(t)] = func(t)
 
                         # Move to the next instruction
                         ins_idx += 1

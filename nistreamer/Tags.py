@@ -25,3 +25,7 @@ def propagate_duration(func):
 def instantaneous(func):
     func._instantaneous = True
     return func
+
+def inplace(func):
+    func._inplace = True
+    return func
