@@ -156,9 +156,9 @@ class Writer(Process):
                     time.sleep(0.00001) # Wait for 10 microseconds
 
             # Start the tasks in order that ensures trigger is armed
-            if not TEST_MODE:
-                for card_idx in reversed(self.active_cards):
-                    print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}.")
+            for card_idx in reversed(self.active_cards):
+                print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}.")
+                if not TEST_MODE:
                     self.tasks[card_idx].start()
 
             # Start polling loop instead of using callbacks
