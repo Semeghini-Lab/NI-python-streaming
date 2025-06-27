@@ -193,7 +193,8 @@ class Sequence:
             default_instruction = Instruction(
                 func=partial(const, value=self.default_value),
                 start_sample=0,
-                end_sample= stop_sample
+                end_sample= stop_sample,
+                inplace=const._inplace
             )
             self.instructions = [default_instruction]
             self.final_sample = stop_sample
