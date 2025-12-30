@@ -2,12 +2,14 @@
 
 import time
 
+import psutil, os
 from nistreamer.NICard import NICard
 from nistreamer.Sequences import AOSequence, DOSequence
 from nistreamer.SequenceStreamer import SequenceStreamer
 
 class Experiment:
     def __init__(self, inherit_timings_from_primary=True, add_channels_to_namespace=True):
+        psutil.Process(os.getpid()).nice(psutil.HIGH_PRIORITY_CLASS)
         # Flag for whether to inherit timings from the primary card
         self.inherit_timings_from_primary = inherit_timings_from_primary
 
