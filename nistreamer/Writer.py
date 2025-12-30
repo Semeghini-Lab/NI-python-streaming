@@ -42,6 +42,7 @@ class Writer(Process):
             ready_ports: list[int],  # Ports for receiving ready signals
             report_ports: list[int],  # Ports for sending reports
             timeout: float = 0.0,  # Grace period after next chunk is expected (in seconds)
+            init_card_flags_shm_name: str = None,  # Name of the shared memory segment for card initialization flags
     ) -> None:
         super().__init__(name="Writer")
         self.writer_id = writer_id
@@ -51,6 +52,9 @@ class Writer(Process):
         self.pool_size = pool_size
         self.timeout = int(timeout)
         self.num_all_cards = num_all_cards
+
+        # Name of the shared memory segment for card initialization flags
+        self.init_card_flags_shm_name = init_card_flags_shm_name
 
         # Store ports
         self.ready_ports = ready_ports
@@ -86,6 +90,9 @@ class Writer(Process):
         # Shared memory for the card initialization flags
         self.shm_init_card_flags = None
         self.init_card_flags = None
+        
+        # Track whether we're still in initialization phase
+        self.is_initializing = True
 
     def run(self):
         if not TEST_MODE:
@@ -129,7 +136,7 @@ class Writer(Process):
                 self.buffers.append(buffer)
 
             # Initialize the card initialization flags buffer
-            self.shm_init_card_flags = shared_memory.SharedMemory(name="nistreamer_init_card_flags")
+            self.shm_init_card_flags = shared_memory.SharedMemory(name=self.init_card_flags_shm_name)
             self.init_card_flags = np.ndarray(
                 (self.num_all_cards,),
                 dtype=bool,
@@ -147,7 +154,8 @@ class Writer(Process):
                     self._configure_device(card_idx)
 
             # Preload the buffer before starting the task
-            for card_idx in self.active_cards:
+            # Iterate over a copy to avoid issues with list modification during iteration
+            for card_idx in list(self.active_cards):
                 self._initialize_device(card_idx, timeout=5.0)
 
             # If there is a primary card, wait until all cards are initialized
@@ -155,10 +163,14 @@ class Writer(Process):
                 while not all(self.init_card_flags):
                     time.sleep(0.00001) # Wait for 10 microseconds
 
+            # Initialization is complete, now we can start removing cards when they finish
+            self.is_initializing = False
+
             # Start the tasks in order that ensures trigger is armed
-            for card_idx in reversed(self.active_cards):
-                print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}.")
-                if not TEST_MODE:
+            # Need to start ALL cards, not just active ones (some may have finished during init)
+            if not TEST_MODE:
+                for card_idx in reversed(range(len(self.cards))):
+                    print(f"Writer {self.writer_id}: starting card={self.card_indices[card_idx]}.")
                     self.tasks[card_idx].start()
 
             # Start polling loop instead of using callbacks
@@ -180,6 +192,12 @@ class Writer(Process):
         This replaces the callback-based approach.
         """
         while self.running:
+            # Check if all cards have finished writing
+            if not self.active_cards:
+                print(f"Writer {self.writer_id}: All cards finished writing, exiting polling loop.")
+                self.running = False
+                break
+            
             for card_idx in self.active_cards:
                 # Check if there's enough space in the buffer for a chunk
                 if not TEST_MODE:
@@ -224,16 +242,8 @@ class Writer(Process):
         if chunk_idx == -1:
             print(f"Writer {self.writer_id} received stop message.")
             self.running = False
-            # Immediately stop DAQ tasks to prevent underrun errors during shutdown
-            if not TEST_MODE and self.tasks:
-                print(f"Writer {self.writer_id}: Stopping DAQ tasks immediately to prevent underrun...")
-                for task_idx, task in enumerate(self.tasks):
-                    if task:
-                        try:
-                            task.stop()
-                            print(f"Writer {self.writer_id}: Stopped DAQ task {task_idx}")
-                        except Exception as e:
-                            print(f"Writer {self.writer_id}: Error stopping task {task_idx}: {e}")
+            # Don't stop DAQ tasks immediately - let buffered data finish playing
+            # The cleanup routine will handle stopping after the proper wait time
             return False
         
         if card_idx_recv != self.card_indices[card_idx]:
@@ -260,7 +270,7 @@ class Writer(Process):
                     # Use standard write method for analog cards
                     self.writers[card_idx].write_many_sample(self.buffers[card_idx][buf_idx])
         except self.ni.errors.DaqError as e:
-            print(f"DAQ error: {e}")
+            print(f"DAQ error [card={self.cards[card_idx].device_name}]: {e}")
             raise
 
         # Update the last chunk index written
@@ -270,9 +280,11 @@ class Writer(Process):
         self.report_sockets[card_idx].send(self.REPORT_STRUCT.pack(chunk_idx, buf_idx, card_idx_recv))
 
         # If the last chunk was written, remove the card from the active cards
+        # Only do this after initialization is complete (after DAQ tasks have started)
         if chunk_idx == self.num_chunks_to_write[card_idx]-1:
             print(f"Writer {self.writer_id}: finished writing card={self.card_indices[card_idx]}.")
-            self.active_cards.remove(card_idx)
+            if not self.is_initializing:
+                self.active_cards.remove(card_idx)
         
         # Return True to indicate successful write
         return True
@@ -330,10 +342,10 @@ class Writer(Process):
                 )
             else:
                 if card.is_digital:
-                    task.timing.samp_clk_rate = 10e6
+                    task.timing.samp_clk_rate = int(10e6)
                     task.timing.samp_clk_src = card.clock_source
                 else:
-                    task.timing.ref_clk_rate = 10e6
+                    task.timing.ref_clk_rate = int(10e6)
                     task.timing.ref_clk_src = card.clock_source
 
         print(f"Writer {self.writer_id}: card={self.card_indices[card_idx]} {'(primary)' if card.is_primary else ''} device={card.device_name} trigger={card.trigger_source} clock={card.clock_source}.")
@@ -358,22 +370,28 @@ class Writer(Process):
 
     def _initialize_device(self, card_idx: int, timeout=5.0):
         """
-        Load the device buffer until full.
+        Load the device buffer until full, but reserve at least one chunk for streaming.
+        This ensures cards remain active during the polling loop and maintain synchronization.
         """
         realtime_timeout = self.timeout
 
         # Set longer timeout for initial buffer loading (5 seconds default)
         self.timeout = 0 if timeout < 1e-3 else int(timeout * 1000) # Convert to milliseconds
 
-        print(f"Writer {self.writer_id}: starting to fill buffer of {self.outbuf_num_chunks} chunks for card={self.card_indices[card_idx]}.")
+        # For very short sequences, reserve at least 1 chunk for the polling loop
+        # This ensures the card stays "active" and continues generating triggers/clock
+        # Exception: single-chunk sequences must preload their only chunk
+        chunks_to_preload = min(self.outbuf_num_chunks, max(1, self.num_chunks_to_write[card_idx] - 1))
+        
+        print(f"Writer {self.writer_id}: starting to fill buffer with {chunks_to_preload} chunks for card={self.card_indices[card_idx]} (total: {self.num_chunks_to_write[card_idx]}).")
         
         # Preload the buffer
         chunks_loaded = 0
-        for i in range(self.outbuf_num_chunks):
+        for i in range(chunks_to_preload):
             if self._write_chunk_to_device(card_idx):
                 chunks_loaded += 1
             else:
-                print(f"Writer {self.writer_id}: warning - only loaded {chunks_loaded}/{self.outbuf_num_chunks} chunks during initialization")
+                print(f"Writer {self.writer_id}: warning - only loaded {chunks_loaded}/{chunks_to_preload} chunks during initialization")
                 break
         
         print(f"Writer {self.writer_id}: successfully preloaded {chunks_loaded} chunks for card={self.card_indices[card_idx]}.")
@@ -406,7 +424,13 @@ class Writer(Process):
                             else:
                                 print(f"Writer {self.writer_id}: Task {task_idx} already stopped")
                         except Exception as e:
-                            print(f"Writer {self.writer_id}: Error stopping task {task_idx}: {e}")
+                            # Suppress expected underrun errors during cleanup
+                            # Error -200290: regeneration of old samples (sequence finished before buffer emptied)
+                            # Error -200621: onboard device memory underflow (sequence finished, no more data)
+                            if hasattr(e, 'error_code') and e.error_code in [-200290, -200621]:
+                                print(f"Writer {self.writer_id}: Task {task_idx} stopped (sequence completed)")
+                            else:
+                                print(f"Writer {self.writer_id}: Error stopping task {task_idx}: {e}")
                         try:
                             task.close()
                             print(f"Writer {self.writer_id}: Closed task {task_idx}")

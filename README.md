@@ -54,6 +54,10 @@ The package is structured as follows:
   - `Sequences.py`: Sequence definitions
   - Other supporting modules
 
+## Issues
+- Multiple writers: attempting to use multiple errors will result in a PLL error. Currently, the user is forced to use a single writer.
+    - On startup of the Writer process: the buffer for each card is initially filled, then the task associated with each card started. When initializing the buffer for each card, the card attempts to start the sample card. However, since the task for the primary card has not been started, it does not export its clock, and we get a PLL error. For unknown reasons, this is not an issue when a single process handle all of this, but becomes an issue when two processes handle this.
+
 ## Requirements
 - Python >= 3.7
 - numpy

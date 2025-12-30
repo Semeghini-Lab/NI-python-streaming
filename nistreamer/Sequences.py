@@ -224,7 +224,7 @@ class Sequence:
             next = self.instructions[i + 1]
             
             if current.end_sample > next.start_sample:
-                raise ValueError(f"Instruction {current} overlaps with {next}")
+                raise ValueError(f"{self.channel_name}({self.channel_id}): Instruction {current} overlaps with {next}")
             else:
                 # Compile the current command into an instruction
                 inst, last_value = self._compile_command(current, last_value)
@@ -312,7 +312,12 @@ class Sequence:
         t_ins = (sample_idx - self.instructions[ins_idx].start_sample) / self.sample_rate
 
         # Evaluate the instruction function at this time
-        result = self.instructions[ins_idx].func(t_ins)
+        if self.instructions[ins_idx].inplace:
+            buf = np.zeros_like(np.atleast_1d(t_ins), dtype=self._buffer_dtype())
+            self.instructions[ins_idx].func(t_ins, buf=buf)
+            result = buf
+        else:
+            result = self.instructions[ins_idx].func(t_ins)
         
         # Convert numpy array to scalar if needed
         if hasattr(result, 'item'):

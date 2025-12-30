@@ -196,6 +196,9 @@ class Experiment:
         if num_workers is None or num_writers is None or pool_size is None:
             raise ValueError("Number of workers, writers, and pool size must be set.")
         
+        if num_writers != 1:
+            raise ValueError("Number of writers must be 1. See README for more information.")
+        
         # Make sure the experiment is compiled
         if not self.is_compiled:
             raise ValueError("Experiment is not compiled. Please compile the experiment before creating a streamer.")
@@ -212,6 +215,148 @@ class Experiment:
     def run(self):
         streamer = self.create_streamer()
         streamer.start()
+
+    def print_instructions(self, card_name=None, channel_name=None, time_unit='ms', save_to_file=None):
+        """
+        Print all compiled instructions in a readable table format.
+        
+        Args:
+            card_name (str, optional): Filter by specific card name. If None, show all cards.
+            channel_name (str, optional): Filter by specific channel name. If None, show all channels.
+            time_unit (str): Time unit for display - 'ms', 's', or 'us'. Default is 'ms'.
+            save_to_file (str, optional): If provided, save instructions to this file path instead of printing.
+        """
+        import sys
+        import os
+        from datetime import datetime
+        
+        # Setup output redirection if saving to file
+        original_stdout = None
+        file_handle = None
+        if save_to_file:
+            try:
+                # If save_to_file is True or empty string, generate filename automatically
+                if save_to_file is True or save_to_file == '':
+                    # Get the calling script name
+                    import inspect
+                    frame = inspect.currentframe()
+                    caller_frame = frame.f_back
+                    caller_file = caller_frame.f_globals.get('__file__', 'experiment')
+                    script_name = os.path.splitext(os.path.basename(caller_file))[0]
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    save_to_file = os.path.join(os.path.dirname(caller_file), f"{script_name}_{timestamp}_instructions.out")
+                
+                file_handle = open(save_to_file, 'w', encoding='utf-8')
+                original_stdout = sys.stdout
+                sys.stdout = file_handle
+            except Exception as e:
+                print(f"Error opening file for writing: {e}", file=sys.stderr)
+                return
+        
+        # Check if the experiment is compiled
+        if not self.is_compiled:
+            print("Error: Experiment is not compiled yet. Please run compile() first.")
+            if file_handle:
+                sys.stdout = original_stdout
+                file_handle.close()
+            return
+        
+        # Set time conversion factor
+        time_units = {'s': 1.0, 'ms': 1e3, 'us': 1e6}
+        if time_unit not in time_units:
+            print(f"Warning: Unknown time unit '{time_unit}', using 'ms'")
+            time_unit = 'ms'
+        time_factor = time_units[time_unit]
+        
+        # Find the total duration across all cards
+        total_duration = 0
+        for card in self.cards.values():
+            if card.sequences:
+                card_duration = card.sequences[0].final_sample / card.sample_rate
+                total_duration = max(total_duration, card_duration)
+        
+        # Print header
+        print("\n" + "="*70)
+        print("=== Experiment Instructions Summary ===")
+        print("="*70)
+        print(f"Total Duration: {total_duration * time_factor:.3f} {time_unit}")
+        print()
+        
+        # Filter cards if specified
+        cards_to_print = [self.cards[card_name]] if card_name and card_name in self.cards else self.cards.values()
+        
+        # Iterate through cards
+        for card in cards_to_print:
+            if not card.sequences:
+                continue
+                
+            # Print card header
+            primary_tag = " (Primary)" if card.is_primary else " (Secondary)"
+            card_type = "Digital" if card.is_digital else "Analog"
+            sample_rate_str = f"{card.sample_rate/1e6:.1f} MHz" if card.sample_rate >= 1e6 else f"{card.sample_rate/1e3:.1f} kHz"
+            print(f"Card: {card.device_name}{primary_tag} [{card_type}, {sample_rate_str}] - {len(card.sequences)} channel(s)")
+            
+            # Filter channels if specified
+            sequences_to_print = card.sequences
+            if channel_name:
+                sequences_to_print = [seq for seq in card.sequences if seq.channel_name == channel_name]
+            
+            # Iterate through sequences (channels)
+            for seq_idx, seq in enumerate(sequences_to_print):
+                is_last_seq = (seq_idx == len(sequences_to_print) - 1)
+                seq_prefix = "└─" if is_last_seq else "├─"
+                
+                # Print channel header
+                channel_display = f"{seq.channel_name} ({seq.channel_id})" if seq.channel_name else seq.channel_id
+                print(f"{seq_prefix} {channel_display}")
+                
+                # Print instructions
+                for ins_idx, instruction in enumerate(seq.instructions):
+                    is_last_ins = (ins_idx == len(seq.instructions) - 1)
+                    
+                    # Calculate instruction timing
+                    start_time = instruction.start_sample / seq.sample_rate * time_factor
+                    end_time = instruction.end_sample / seq.sample_rate * time_factor
+                    duration = end_time - start_time
+                    
+                    # Get function name and parameters
+                    func_name = instruction.func.func.__name__
+                    params = instruction.func.keywords
+                    
+                    # Format parameters for display
+                    param_str = ", ".join([f"{k}={v}" for k, v in params.items()])
+                    
+                    # Format the instruction line
+                    ins_prefix = "   " if is_last_seq else "│  "
+                    ins_connector = "└─" if is_last_ins else "├─"
+                    
+                    # Create time range string
+                    time_range = f"[{start_time:9.3f} - {end_time:9.3f} {time_unit}]"
+                    
+                    # Create function display
+                    if param_str:
+                        func_display = f"{func_name}({param_str})"
+                    else:
+                        func_display = func_name
+                    
+                    # Print the instruction
+                    print(f"{ins_prefix}{ins_connector} {time_range} {func_display}")
+                
+                # Add spacing between channels
+                if not is_last_seq:
+                    print("│")
+            
+            # Add spacing between cards
+            print()
+        
+        print("="*70)
+        print()
+        
+        # Restore stdout and close file if we were saving to file
+        if file_handle:
+            sys.stdout = original_stdout
+            file_handle.close()
+            print(f"Instructions saved to: {save_to_file}")
 
     def save(self, filename):
         """Save the experiment to a file."""
@@ -262,3 +407,13 @@ if __name__ == "__main__":
     mot_coil.sine(1*ms, cmd_duration=1 * ms, freq=1.0, amp=10, phase=0)
 
     exp.compile(chunk_size=65536)
+    
+    # Print all compiled instructions
+    exp.print_instructions()
+    
+    # Print instructions for a specific card
+    # exp.print_instructions(card_name='PXI1Slot2')
+    
+    # Print instructions in different time units
+    # exp.print_instructions(time_unit='s')  # seconds
+    # exp.print_instructions(time_unit='us') # microseconds

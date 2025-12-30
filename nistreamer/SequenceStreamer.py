@@ -2,6 +2,7 @@
 # Created by: Marcin Kalinowski & Yi Zhu
 
 import sys
+import os
 import struct
 import numpy as np
 import zmq
@@ -204,7 +205,8 @@ class SequenceStreamer:
             print(f"Shared memory segment '{card.shm_name}' created with size {shm_size} bytes: ({self.pool_size}x {card.chunk_size} samples for {card.num_channels()} channels).")
 
         # Create shared memory segment for card initialization flags and set them all to False
-        self.shm_init_card_flags = multiprocessing.shared_memory.SharedMemory(create=True, size=len(self.cards) * np.dtype(bool).itemsize, name="nistreamer_init_card_flags")
+        self.shm_init_card_flags_name = f"nistreamer_{os.getpid()}_init_card_flags"
+        self.shm_init_card_flags = multiprocessing.shared_memory.SharedMemory(create=True, size=len(self.cards) * np.dtype(bool).itemsize, name=self.shm_init_card_flags_name)
         init_card_buf = np.ndarray(len(self.cards), dtype=bool, buffer=self.shm_init_card_flags.buf)
         init_card_buf.fill(False)
 
@@ -267,6 +269,7 @@ class SequenceStreamer:
                     ready_ports=[self._get_port(self.writer_ready_sockets[i]) for i in card_indices],
                     report_ports=[self._get_port(self.writer_report_sockets[i]) for i in card_indices],
                     num_all_cards=len(self.cards),
+                    init_card_flags_shm_name=self.shm_init_card_flags_name,
                 )
                 writer.daemon = True
                 writer.start()

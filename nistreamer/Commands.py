@@ -18,8 +18,8 @@ def const(t, value, buf):
     return None
 
 @analog_output
-def sine(t, freq, amp, phase):
-    return amp * np.sin(2 * np.pi * freq * t + phase)
+def sine(t, freq, amp, phase, offset):
+    return offset +amp * np.sin(2 * np.pi * freq * t + phase)
 
 @analog_output
 @propagate_duration
